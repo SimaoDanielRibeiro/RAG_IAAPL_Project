@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Document Q&A RAG App
 
 A simple Streamlit application that lets you upload one or more documents and ask questions about their contents using a local Retrieval-Augmented Generation (RAG) pipeline.
@@ -174,3 +175,6 @@ I could not find that information in the uploaded document.
 - Indexing metadata is stored in `data/index_manifest.json` for easier reuse and debugging.
 - Streamlit caches the pipeline resource so reruns are faster after the first load.
 - Logging is enabled to help with debugging.
+=======
+# RAG_IAAPL_Project
+>>>>>>> 887299a071f7f5503af0abb63bccbfa83b8f34c3

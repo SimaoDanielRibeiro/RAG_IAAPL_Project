@@ -1,0 +1,13 @@
+SISTCA  20/27 
+ 
+Figure 19 Docker container in port 9443 
+ 
+Figure 20 Portainer UI 
+See the containers that are running: 
+~$ docker ps  
+CONTAINER ID IMAGE COMMAND CREATED STATUS PORTS NAMES 
+17f87732d533 portainer/portainer-ce:lts "/portainer" 6 minutes ago Up 6 minutes 
+0.0.0.0:8000->8000/tcp, 0.0.0.0:9443->9443/tcp, 9000/tcp portainer 
+Stop the container: 
+~$ docker stop portainer  
+Portainerÿÿ

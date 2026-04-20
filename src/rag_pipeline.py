@@ -27,8 +27,20 @@ from src.utils import ensure_directory, load_json_file, safe_collection_name, sa
 
 
 class PDFRAGPipeline:
-    """Simple document RAG pipeline with Chroma persistence and Ollama models."""
+    """Simple document RAG pipeline with Chroma persistence and Ollama models.
 
+    High-level flow:
+    1. Save and load uploaded documents.
+    2. Split documents into chunks and enrich them with metadata.
+    3. Index chunks into Chroma for later retrieval.
+    4. Rewrite the user's question when conversational context is needed.
+    5. Retrieve, deduplicate, expand, rerank, and select the best chunks.
+    6. Build final context and ask the LLM to answer using only that context.
+    """
+
+    # ---------------------------------------------------------------------
+    # Initialization and shared resources
+    # ---------------------------------------------------------------------
     def __init__(
         self,
         data_dir: str = "data",
@@ -53,6 +65,9 @@ class PDFRAGPipeline:
             separators=["\n\n", "\n", ". ", " "],
         )
 
+    # ---------------------------------------------------------------------
+    # File persistence and indexing
+    # ---------------------------------------------------------------------
     def save_uploaded_document(self, file_name: str, file_bytes: bytes) -> Path:
         """Save an uploaded document to disk."""
         destination = self.data_dir / file_name
@@ -91,22 +106,8 @@ class PDFRAGPipeline:
         all_documents: list[Document] = []
 
         for document_path in normalized_paths:
-            loaded_documents = load_source_documents(document_path)
-            extracted_text = " ".join(
-                document.page_content.strip()
-                for document in loaded_documents
-                if document.page_content.strip()
-            )
-            if not extracted_text:
-                raise ValueError(
-                    f"No readable text was extracted from '{document_path.name}'. If it is scanned, OCR may be required before upload."
-                )
-
-            chunks = self.text_splitter.split_documents(loaded_documents)
-            if not chunks:
-                raise ValueError(f"No text chunks could be created from '{document_path.name}'.")
-
-            all_documents.extend(self._add_chunk_metadata(chunks, document_path.name))
+            source_chunks = self._prepare_document_chunks_for_indexing(document_path)
+            all_documents.extend(source_chunks)
 
         vectorstore.add_documents(all_documents)
         self._save_manifest_entry(
@@ -118,6 +119,9 @@ class PDFRAGPipeline:
         self.logger.info("Indexed %s chunks for %s document(s)", len(all_documents), len(normalized_paths))
         return vectorstore
 
+    # ---------------------------------------------------------------------
+    # Main question-answering flow
+    # ---------------------------------------------------------------------
     def answer_question(
         self,
         vectorstore: Chroma,
@@ -127,47 +131,37 @@ class PDFRAGPipeline:
         answer_mode: str = "standard",
     ) -> dict[str, Any]:
         """Answer a user question using multi-query retrieval over the document context."""
+        # Step 1: turn the user's message into a standalone retrieval question.
         standalone_question = self._rewrite_question_with_history(question, chat_history or [])
-        retrieval_top_k = 12 if answer_mode == "exhaustive" else top_k
-        generated_queries = self.generate_search_queries(standalone_question)
-        retrieved_docs = self._retrieve_documents(vectorstore, generated_queries, top_k=retrieval_top_k)
-        deduplicated_docs = self._deduplicate_documents(retrieved_docs)
-        expanded_docs = self._expand_neighbor_chunks(vectorstore, deduplicated_docs)
-        reranked_docs = self._rerank_documents(standalone_question, expanded_docs)
-        final_docs = self._select_final_documents(reranked_docs, answer_mode=answer_mode)
+
+        # Step 2: run the retrieval pipeline and keep only the strongest chunks.
+        retrieval_result = self._run_retrieval_pipeline(
+            vectorstore=vectorstore,
+            standalone_question=standalone_question,
+            answer_mode=answer_mode,
+            top_k=top_k,
+        )
+        generated_queries = retrieval_result["generated_queries"]
+        final_docs = retrieval_result["final_documents"]
+
+        # Step 3: build the final context that will be sent to the LLM.
         context = self._build_context(final_docs)
 
+        # Step 4: decide whether the retrieved evidence is strong enough.
         average_score = self._average_rerank_score(final_docs)
         if not context.strip() or self._has_weak_evidence(final_docs, average_score):
-            fallback = "I could not find that information in the uploaded document."
-            return {
-                "answer": fallback,
-                "documents": [],
-                "context": "",
-                "confidence": "Low",
-                "pages": [],
-                "chunks_used": 0,
-                "average_score": None,
-                "queries": generated_queries,
-                "sources": [],
-                "retrieval_question": standalone_question,
-                "answer_mode": answer_mode,
-            }
+            return self._build_fallback_response(
+                generated_queries=generated_queries,
+                standalone_question=standalone_question,
+                answer_mode=answer_mode,
+            )
 
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", SYSTEM_PROMPT),
-                (
-                    "human",
-                    EXHAUSTIVE_ANSWER_PROMPT_TEMPLATE if answer_mode == "exhaustive" else ANSWER_PROMPT_TEMPLATE,
-                ),
-            ]
+        # Step 5: generate the final grounded answer from the selected context.
+        answer = self._generate_answer_from_context(
+            context=context,
+            standalone_question=standalone_question,
+            answer_mode=answer_mode,
         )
-        chain = prompt | self.chat_model | StrOutputParser()
-        answer = chain.invoke({"context": context, "question": standalone_question}).strip()
-
-        if not answer:
-            answer = "I could not find that information in the uploaded document."
 
         pages = self._extract_page_numbers(final_docs)
         sources = self._extract_source_names(final_docs)
@@ -187,6 +181,93 @@ class PDFRAGPipeline:
             "answer_mode": answer_mode,
         }
 
+    def _prepare_document_chunks_for_indexing(self, document_path: Path) -> list[Document]:
+        """Load a document, split it into chunks, and attach metadata for indexing."""
+        loaded_documents = load_source_documents(document_path)
+        extracted_text = " ".join(
+            document.page_content.strip()
+            for document in loaded_documents
+            if document.page_content.strip()
+        )
+        if not extracted_text:
+            raise ValueError(
+                f"No readable text was extracted from '{document_path.name}'. If it is scanned, OCR may be required before upload."
+            )
+
+        chunks = self.text_splitter.split_documents(loaded_documents)
+        if not chunks:
+            raise ValueError(f"No text chunks could be created from '{document_path.name}'.")
+
+        return self._add_chunk_metadata(chunks, document_path.name)
+
+    def _run_retrieval_pipeline(
+        self,
+        vectorstore: Chroma,
+        standalone_question: str,
+        answer_mode: str,
+        top_k: int,
+    ) -> dict[str, Any]:
+        """Execute the retrieval pipeline from query expansion to final chunk selection."""
+        retrieval_top_k = 12 if answer_mode == "exhaustive" else top_k
+        generated_queries = self.generate_search_queries(standalone_question)
+        retrieved_documents = self._retrieve_documents(vectorstore, generated_queries, top_k=retrieval_top_k)
+        unique_documents = self._deduplicate_documents(retrieved_documents)
+        expanded_documents = self._expand_neighbor_chunks(vectorstore, unique_documents)
+        reranked_documents = self._rerank_documents(standalone_question, expanded_documents)
+        final_documents = self._select_final_documents(reranked_documents, answer_mode=answer_mode)
+        return {
+            "generated_queries": generated_queries,
+            "retrieved_documents": retrieved_documents,
+            "unique_documents": unique_documents,
+            "expanded_documents": expanded_documents,
+            "reranked_documents": reranked_documents,
+            "final_documents": final_documents,
+        }
+
+    def _build_fallback_response(
+        self,
+        generated_queries: list[str],
+        standalone_question: str,
+        answer_mode: str,
+    ) -> dict[str, Any]:
+        """Return the standard fallback payload when retrieval evidence is weak."""
+        return {
+            "answer": "I could not find that information in the uploaded document.",
+            "documents": [],
+            "context": "",
+            "confidence": "Low",
+            "pages": [],
+            "chunks_used": 0,
+            "average_score": None,
+            "queries": generated_queries,
+            "sources": [],
+            "retrieval_question": standalone_question,
+            "answer_mode": answer_mode,
+        }
+
+    def _generate_answer_from_context(
+        self,
+        context: str,
+        standalone_question: str,
+        answer_mode: str,
+    ) -> str:
+        """Ask the LLM to answer using only the final retrieved context."""
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", SYSTEM_PROMPT),
+                (
+                    "human",
+                    EXHAUSTIVE_ANSWER_PROMPT_TEMPLATE if answer_mode == "exhaustive" else ANSWER_PROMPT_TEMPLATE,
+                ),
+            ]
+        )
+        chain = prompt | self.chat_model | StrOutputParser()
+        answer = chain.invoke({"context": context, "question": standalone_question}).strip()
+        return answer or "I could not find that information in the uploaded document."
+
+    # ---------------------------------------------------------------------
+    # Summary generation
+    # ---------------------------------------------------------------------
     def summarize_documents(self, vectorstore: Chroma, file_names: list[str]) -> dict[str, Any]:
         """Create one summary per uploaded document."""
         summaries: list[dict[str, Any]] = []
@@ -195,6 +276,10 @@ class PDFRAGPipeline:
             summaries.append(self._summarize_single_source(vectorstore, file_name, documents))
         return {"summaries": summaries}
 
+    # ---------------------------------------------------------------------
+    # Query rewriting and expansion
+    # These methods prepare the user question for better retrieval.
+    # ---------------------------------------------------------------------
     def generate_search_queries(self, question: str) -> list[str]:
         """Generate the original question plus two retrieval-focused rewrites."""
         query_prompt = PromptTemplate(
@@ -292,6 +377,11 @@ class PDFRAGPipeline:
 
         return cleaned
 
+    # ---------------------------------------------------------------------
+    # Retrieval and source loading
+    # These methods fetch candidate chunks from the vector store.
+    # ---------------------------------------------------------------------
+
     def _retrieve_documents(self, vectorstore: Chroma, queries: list[str], top_k: int) -> list[Document]:
         """Run MMR retrieval for each query variant and combine the results."""
         retrieved_documents: list[Document] = []
@@ -322,6 +412,10 @@ class PDFRAGPipeline:
             ),
         )
 
+    # ---------------------------------------------------------------------
+    # Chunk metadata enrichment
+    # These methods make each chunk easier to track and relate to neighbors.
+    # ---------------------------------------------------------------------
     def _add_chunk_metadata(self, chunks: list[Document], source_name: str) -> list[Document]:
         """Attach consistent metadata to each chunk."""
         documents: list[Document] = []
@@ -337,6 +431,10 @@ class PDFRAGPipeline:
             documents.append(Document(page_content=chunk.page_content, metadata=metadata))
         return documents
 
+    # ---------------------------------------------------------------------
+    # Retrieval post-processing
+    # These methods clean, expand, and rerank retrieved chunks.
+    # ---------------------------------------------------------------------
     def _deduplicate_documents(self, documents: list[Document]) -> list[Document]:
         """Remove duplicate chunks returned by multi-query retrieval."""
         seen: set[tuple[str | None, int | None]] = set()
@@ -437,6 +535,10 @@ class PDFRAGPipeline:
             return True
         return average_score < 6.5
 
+    # ---------------------------------------------------------------------
+    # Context building and answer formatting support
+    # These methods prepare final chunk context and output metadata.
+    # ---------------------------------------------------------------------
     def _build_context(self, documents: list[Document]) -> str:
         """Format retrieved documents into a single context string for the LLM."""
         sections: list[str] = []
@@ -454,6 +556,10 @@ class PDFRAGPipeline:
             sections.append(f"{header}:\n{document.page_content.strip()}")
         return "\n\n".join(sections)
 
+    # ---------------------------------------------------------------------
+    # Per-file summary helpers
+    # These methods build targeted summaries for each uploaded source.
+    # ---------------------------------------------------------------------
     def _summarize_single_source(
         self,
         vectorstore: Chroma,
@@ -521,6 +627,10 @@ class PDFRAGPipeline:
             selected_documents = deduplicated_documents[:5]
         return selected_documents
 
+    # ---------------------------------------------------------------------
+    # Metadata extraction and quality scoring
+    # These methods support the UI with pages, sources, citations, and confidence.
+    # ---------------------------------------------------------------------
     def _detect_section_title(self, chunk_text: str) -> str | None:
         """Heuristically detect a heading-like first line in a chunk."""
         for raw_line in chunk_text.splitlines():
@@ -594,6 +704,10 @@ class PDFRAGPipeline:
             return "Medium"
         return "Low"
 
+    # ---------------------------------------------------------------------
+    # Manifest and collection reuse
+    # These methods let the app reuse previous indexing work safely.
+    # ---------------------------------------------------------------------
     def _resolve_collection_name(self, file_name: str, content_hash: str) -> str:
         """Reuse the stored collection name for this document set when available."""
         manifest = load_json_file(self.manifest_path)

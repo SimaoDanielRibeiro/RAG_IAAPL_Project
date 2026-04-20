@@ -24,6 +24,10 @@ RIGHT_PANEL_HEIGHT = 920
 CHAT_MESSAGES_HEIGHT = 660
 
 
+# ---------------------------------------------------------------------
+# Session state
+# These values keep the app consistent across Streamlit reruns.
+# ---------------------------------------------------------------------
 def initialize_session_state() -> None:
     st.session_state.setdefault("messages", [])
     st.session_state.setdefault("vectorstore", None)
@@ -36,6 +40,10 @@ def initialize_session_state() -> None:
     st.session_state.setdefault("answer_mode", "Standard Q&A")
 
 
+# ---------------------------------------------------------------------
+# Styling and cached resources
+# These functions define the UI styling and cache the pipeline.
+# ---------------------------------------------------------------------
 def apply_app_styles() -> None:
     st.markdown(
         """
@@ -153,6 +161,10 @@ def get_pipeline(chat_model: str, embedding_model: str) -> PDFRAGPipeline:
     )
 
 
+# ---------------------------------------------------------------------
+# Session reset helpers
+# These functions clear only chat-related state.
+# ---------------------------------------------------------------------
 def reset_current_document() -> None:
     st.session_state["messages"] = []
     st.session_state["last_sources"] = []
@@ -161,6 +173,10 @@ def reset_current_document() -> None:
     st.session_state["summary_minimized"] = False
 
 
+# ---------------------------------------------------------------------
+# Upload and indexing
+# These functions validate files and trigger indexing.
+# ---------------------------------------------------------------------
 def handle_upload(pipeline: PDFRAGPipeline) -> None:
     uploaded_files = st.file_uploader(
         "Upload one or more files",
@@ -223,6 +239,10 @@ def handle_upload(pipeline: PDFRAGPipeline) -> None:
     )
 
 
+# ---------------------------------------------------------------------
+# Left panel rendering
+# These functions render model info, uploader, and active files.
+# ---------------------------------------------------------------------
 def render_left_panel(pipeline: PDFRAGPipeline) -> None:
     with st.container(border=True, height=LEFT_PANEL_HEIGHT):
         st.markdown('<div class="panel-heading">Documents</div>', unsafe_allow_html=True)
@@ -251,6 +271,10 @@ def render_left_panel(pipeline: PDFRAGPipeline) -> None:
             st.caption("No indexed files yet.")
 
 
+# ---------------------------------------------------------------------
+# Summary UI
+# These functions render and control the summary panel.
+# ---------------------------------------------------------------------
 def render_summary_panel() -> None:
     summary_result = st.session_state.get("summary_result")
     if not summary_result:
@@ -278,6 +302,10 @@ def render_summary_panel() -> None:
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+# ---------------------------------------------------------------------
+# Chat controls
+# These functions render answer-mode selection and chat actions.
+# ---------------------------------------------------------------------
 def render_chat_actions(pipeline: PDFRAGPipeline) -> None:
     current_files = st.session_state.get("pdf_names", [])
     if current_files and st.session_state.get("vectorstore") is not None:
@@ -313,6 +341,10 @@ def render_chat_actions(pipeline: PDFRAGPipeline) -> None:
             reset_current_document()
 
 
+# ---------------------------------------------------------------------
+# Message history rendering
+# These functions display the conversation and debug details.
+# ---------------------------------------------------------------------
 def render_message_history(messages_placeholder: st.delta_generator.DeltaGenerator, height: int) -> None:
     with messages_placeholder.container(height=height, border=False):
         for message in st.session_state["messages"]:
@@ -373,6 +405,10 @@ def render_message_history(messages_placeholder: st.delta_generator.DeltaGenerat
                             st.write(preview)
 
 
+# ---------------------------------------------------------------------
+# Main chat flow
+# These functions handle user questions and assistant responses.
+# ---------------------------------------------------------------------
 def render_chat(pipeline: PDFRAGPipeline) -> None:
     with st.container(border=True, height=RIGHT_PANEL_HEIGHT):
         render_chat_actions(pipeline)
@@ -433,6 +469,10 @@ def render_chat(pipeline: PDFRAGPipeline) -> None:
         render_message_history(messages_placeholder, messages_height)
 
 
+# ---------------------------------------------------------------------
+# App entrypoint
+# This function assembles the full page layout.
+# ---------------------------------------------------------------------
 def run_app() -> None:
     st.set_page_config(page_title="PDF Q&A RAG App", page_icon="📄", layout="wide")
     initialize_session_state()

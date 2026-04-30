@@ -93,12 +93,12 @@ class PDFRAGPipeline:
             embedding_function=self.embeddings,
         )
 
-        existing_count = vectorstore._collection.count()
-        if existing_count > 0:
+        existing_ids = vectorstore.get(include=[]).get("ids", [])
+        if existing_ids:
             self.logger.info(
                 "Reusing existing Chroma collection '%s' with %s chunks",
                 collection_name,
-                existing_count,
+                len(existing_ids),
             )
             return vectorstore
 

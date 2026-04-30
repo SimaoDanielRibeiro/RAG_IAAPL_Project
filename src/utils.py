@@ -53,11 +53,18 @@ def safe_collection_name(file_name: str, content_hash: str) -> str:
 
 
 def load_json_file(path: str | Path) -> dict[str, Any]:
-    """Load JSON data from disk, returning an empty dict when missing."""
+    """Load JSON data from disk, returning an empty dict when missing or corrupted."""
     file_path = Path(path)
     if not file_path.exists():
         return {}
-    return json.loads(file_path.read_text(encoding="utf-8"))
+    try:
+        return json.loads(file_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        # Treat unreadable or partially-written files as empty so the app can recover.
+        logging.getLogger(LOGGER_NAME).warning(
+            "Could not parse JSON at %s; treating as empty.", file_path
+        )
+        return {}
 
 
 def save_json_file(path: str | Path, payload: dict[str, Any]) -> None:

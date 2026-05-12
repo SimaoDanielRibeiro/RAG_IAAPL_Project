@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { X, Search, FileText, Hash, Star, Quote } from "lucide-react";
+import { X, Search, FileText, Hash, Star, Quote, Layers } from "lucide-react";
 import type { ChatResponse, ChunkInfo } from "@/types";
 
 interface Props {
@@ -99,6 +99,33 @@ export function EvidencePanel({ open, evidence, onClose }: Props) {
                       {c}
                     </li>
                   ))}
+                </ul>
+              </Section>
+            )}
+
+            {Object.keys(evidence.source_distribution ?? {}).length > 1 && (
+              <Section icon={<Layers size={13} />} title="Source distribution">
+                <ul className="space-y-2">
+                  {Object.entries(evidence.source_distribution)
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([source, count]) => {
+                      const total = Object.values(evidence.source_distribution).reduce((s, n) => s + n, 0);
+                      const pct = Math.round((count / total) * 100);
+                      return (
+                        <li key={source} className="space-y-1">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="max-w-[320px] truncate text-slate-400" title={source}>{source}</span>
+                            <span className="shrink-0 text-slate-500">{count} chunk{count !== 1 ? "s" : ""} · {pct}%</span>
+                          </div>
+                          <div className="h-1 w-full rounded-full bg-bg-border">
+                            <div
+                              className="h-1 rounded-full bg-blue-500 transition-all"
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                        </li>
+                      );
+                    })}
                 </ul>
               </Section>
             )}

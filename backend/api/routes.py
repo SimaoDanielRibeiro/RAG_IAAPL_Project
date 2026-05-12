@@ -128,7 +128,12 @@ async def chat(req: ChatRequest) -> ChatResponse:
         )
     try:
         result = await asyncio.to_thread(
-            rag_service.answer_question, req.question, req.answer_mode, req.chat_history
+            rag_service.answer_question,
+            req.question,
+            req.answer_mode,
+            req.chat_history,
+            req.document_id,
+            req.scope,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
@@ -146,6 +151,10 @@ async def chat(req: ChatRequest) -> ChatResponse:
         for doc in result.get("documents", [])
     ]
 
+    source_distribution: dict[str, int] = {}
+    for chunk in chunks:
+        source_distribution[chunk.source] = source_distribution.get(chunk.source, 0) + 1
+
     return ChatResponse(
         answer=result.get("answer", ""),
         confidence=result.get("confidence", "Low"),
@@ -158,6 +167,8 @@ async def chat(req: ChatRequest) -> ChatResponse:
         retrieval_question=result.get("retrieval_question", req.question),
         documents=chunks,
         answer_mode=result.get("answer_mode", req.answer_mode),
+        source_distribution=source_distribution,
+        scope=req.scope,
     )
 
 

@@ -50,27 +50,67 @@ class HybridRetriever:
     # ------------------------------------------------------------------
     # Public retrieval entry points
     # ------------------------------------------------------------------
-    def retrieve(self, vectorstore: Chroma, queries: list[str], top_k: int) -> list[Document]:
+    def retrieve(
+        self,
+        vectorstore: Chroma,
+        queries: list[str],
+        top_k: int,
+        source_filter: str | None = None,
+    ) -> list[Document]:
         """Combine semantic MMR retrieval with BM25 keyword retrieval."""
-        vector_documents = self.retrieve_vector(vectorstore, queries, top_k=top_k)
-        keyword_documents = self.retrieve_keyword(vectorstore, queries, top_k=top_k)
+        vector_documents = self.retrieve_vector(vectorstore, queries, top_k=top_k, source_filter=source_filter)
+        keyword_documents = self.retrieve_keyword(vectorstore, queries, top_k=top_k, source_filter=source_filter)
         return vector_documents + keyword_documents
 
-    def retrieve_vector(self, vectorstore: Chroma, queries: list[str], top_k: int) -> list[Document]:
+    def retrieve_diverse(
+        self,
+        vectorstore: Chroma,
+        queries: list[str],
+        top_k: int,
+        source_names: list[str],
+    ) -> list[Document]:
+        """Per-source retrieval followed by global merge for better multi-file coverage.
+
+        Retrieves candidates from each source independently so no single large
+        document crowds out smaller ones. The caller deduplicates and reranks
+        the merged pool globally.
+        """
+        if not source_names:
+            return self.retrieve(vectorstore, queries, top_k=top_k)
+        per_source_k = max(3, (top_k // len(source_names)) + 1)
+        all_docs: list[Document] = []
+        for source in source_names:
+            vec_docs = self.retrieve_vector(vectorstore, queries, top_k=per_source_k, source_filter=source)
+            kw_docs = self.retrieve_keyword(vectorstore, queries, top_k=per_source_k, source_filter=source)
+            all_docs.extend(vec_docs)
+            all_docs.extend(kw_docs)
+        return all_docs
+
+    def retrieve_vector(
+        self,
+        vectorstore: Chroma,
+        queries: list[str],
+        top_k: int,
+        source_filter: str | None = None,
+    ) -> list[Document]:
         """Run MMR vector retrieval for each query variant."""
         retrieved_documents: list[Document] = []
         fetch_k = max(
             top_k * self.config.vector_fetch_multiplier,
             self.config.vector_fetch_k_minimum,
         )
+        chroma_filter = {"source": source_filter} if source_filter else None
         for query in queries:
             try:
-                results = vectorstore.max_marginal_relevance_search(
+                kwargs: dict = dict(
                     query=query,
                     k=top_k,
                     fetch_k=fetch_k,
                     lambda_mult=self.config.mmr_lambda,
                 )
+                if chroma_filter:
+                    kwargs["filter"] = chroma_filter
+                results = vectorstore.max_marginal_relevance_search(**kwargs)
             except Exception as error:
                 self.logger.warning(
                     "Vector retrieval failed for query '%s'. Error: %s", query, error
@@ -80,7 +120,13 @@ class HybridRetriever:
                 retrieved_documents.append(self._tag_method(document, "vector"))
         return retrieved_documents
 
-    def retrieve_keyword(self, vectorstore: Chroma, queries: list[str], top_k: int) -> list[Document]:
+    def retrieve_keyword(
+        self,
+        vectorstore: Chroma,
+        queries: list[str],
+        top_k: int,
+        source_filter: str | None = None,
+    ) -> list[Document]:
         """Run BM25 keyword retrieval over chunks already stored in Chroma."""
         if BM25Okapi is None:
             self.logger.info(
@@ -93,13 +139,24 @@ class HybridRetriever:
         if entry is None:
             return []
 
+        # When filtering by source, build an on-the-fly subset index.
+        if source_filter:
+            docs = [d for d in entry.documents if d.metadata.get("source") == source_filter]
+            if not docs:
+                return []
+            tokenized_corpus = [self._tokenize(d.page_content) for d in docs]
+            bm25 = BM25Okapi(tokenized_corpus)
+        else:
+            docs = entry.documents
+            bm25 = entry.bm25
+
         retrieved_documents: list[Document] = []
         for query in queries:
             query_tokens = self._tokenize(query)
             if not query_tokens:
                 continue
 
-            scores = entry.bm25.get_scores(query_tokens)
+            scores = bm25.get_scores(query_tokens)
             if not len(scores):
                 continue
 
@@ -110,7 +167,7 @@ class HybridRetriever:
             for index in ranked_indexes:
                 if scores[index] <= 0:
                     continue
-                document = entry.documents[index]
+                document = docs[index]
                 tagged = self._tag_method(document, "keyword")
                 tagged.metadata["bm25_score"] = round(float(scores[index]), 4)
                 retrieved_documents.append(tagged)

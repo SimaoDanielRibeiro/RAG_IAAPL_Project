@@ -20,9 +20,9 @@ Question:
 
 Instructions:
 - Use the context to answer the question. Extract whatever is relevant; do not refuse just because the wording differs from the question.
+- After each sentence or bullet that uses information from the context, add an inline citation in the format [filename, p.N] — for example [report.pdf, p.3]. If the page number is not available, cite the filename alone: [report.pdf]. Do not fabricate citations.
 - If only part of the answer is present, give that part and note what is missing.
 - Do not invent facts or use outside knowledge.
-- Mention the relevant page number(s) and source file name(s) when possible.
 - Keep the answer clear and concise.
 - Only when the context contains nothing related to the question at all, respond exactly with:
   I could not find that information in the uploaded document.
@@ -40,7 +40,7 @@ Instructions:
 - Extract as much relevant information as possible from the context.
 - Do not give only a short summary if the user asks for all items, all comparisons, all mentions, or everything relevant.
 - Organize the answer into clear sections or bullet points when helpful.
-- Include the relevant file name and page number when possible.
+- After each sentence or bullet that uses information from the context, add an inline citation in the format [filename, p.N] — for example [report.pdf, p.3]. If the page number is not available, cite the filename alone: [report.pdf]. Do not fabricate citations.
 - If part of the requested information is missing from the context, say so clearly.
 - If nothing relevant is found, respond exactly with:
   I could not find that information in the uploaded document.

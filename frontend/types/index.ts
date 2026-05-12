@@ -30,6 +30,8 @@ export interface ChatResponse {
   retrieval_question: string;
   documents: ChunkInfo[];
   answer_mode: string;
+  source_distribution: Record<string, number>;
+  scope: string;
 }
 
 export interface SummaryEntry {

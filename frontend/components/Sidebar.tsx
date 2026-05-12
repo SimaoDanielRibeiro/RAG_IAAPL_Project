@@ -27,6 +27,8 @@ interface Props {
   onRemoveAll: () => void;
   onAnswerModeChange: (mode: AnswerMode) => void;
   onSummary: () => void;
+  selectedDocumentId: string | null;
+  onSelectDocument: (id: string) => void;
 }
 
 function formatBytes(bytes: number): string {
@@ -47,6 +49,8 @@ export function Sidebar({
   onRemoveAll,
   onAnswerModeChange,
   onSummary,
+  selectedDocumentId,
+  onSelectDocument,
 }: Props) {
   const [documentsCollapsed, setDocumentsCollapsed] = useState(false);
   const [toolsCollapsed, setToolsCollapsed] = useState(false);
@@ -125,30 +129,53 @@ export function Sidebar({
         {documents.length === 0 ? (
           <p className="text-xs text-slate-600 text-center mt-4">No documents loaded.</p>
         ) : (
-          <ul className="space-y-1">
-            {documents.map((doc) => (
-              <li
-                key={doc.id}
-                className="group flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-bg-elevated transition-colors"
-              >
-                <FileText size={14} className="text-slate-400 shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <p className="text-[13px] text-slate-300 truncate" title={doc.name}>
-                    {doc.name}
-                  </p>
-                  <p className="text-[10px] text-slate-600">{formatBytes(doc.size_bytes)}</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => onRemoveDocument(doc.id)}
-                  className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-red-900/30 hover:text-red-400 text-slate-600 transition-all"
-                  title="Remove document"
-                >
-                  <Trash2 size={12} />
-                </button>
-              </li>
-            ))}
-          </ul>
+          <>
+            {documents.length > 1 && (
+              <p className="mb-2 text-[10px] text-slate-600">Click a file to focus chat on it.</p>
+            )}
+            <ul className="space-y-1">
+              {documents.map((doc) => {
+                const isSelected = doc.id === selectedDocumentId;
+                return (
+                  <li
+                    key={doc.id}
+                    className={`group flex items-center gap-2 rounded-md px-2 py-1.5 cursor-pointer transition-colors ${
+                      isSelected
+                        ? "bg-blue-950/40 border border-blue-700/50"
+                        : "hover:bg-bg-elevated border border-transparent"
+                    }`}
+                    onClick={() => onSelectDocument(doc.id)}
+                    title={isSelected ? "Click to search all files" : "Click to focus chat on this file"}
+                  >
+                    <FileText
+                      size={14}
+                      className={isSelected ? "text-blue-400 shrink-0" : "text-slate-400 shrink-0"}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p
+                        className={`text-[13px] truncate ${isSelected ? "text-blue-300" : "text-slate-300"}`}
+                        title={doc.name}
+                      >
+                        {doc.name}
+                      </p>
+                      <p className="text-[10px] text-slate-600">{formatBytes(doc.size_bytes)}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onRemoveDocument(doc.id);
+                      }}
+                      className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-red-900/30 hover:text-red-400 text-slate-600 transition-all"
+                      title="Remove document"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </>
         )}
 
         {documents.length > 1 && (

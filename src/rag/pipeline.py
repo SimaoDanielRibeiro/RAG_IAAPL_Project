@@ -141,6 +141,8 @@ class DocumentRAGPipeline:
         top_k: int | None = None,
         chat_history: list[dict[str, str]] | None = None,
         answer_mode: str = "standard",
+        source_filter: str | None = None,
+        source_names: list[str] | None = None,
     ) -> dict[str, Any]:
         """Answer a user question using hybrid retrieval over indexed documents."""
         retrieval_top_k = top_k if top_k is not None else self.config.vector_top_k
@@ -151,6 +153,8 @@ class DocumentRAGPipeline:
             standalone_question=standalone_question,
             answer_mode=answer_mode,
             top_k=retrieval_top_k,
+            source_filter=source_filter,
+            source_names=source_names or [],
         )
         generated_queries = retrieval_result["generated_queries"]
         final_docs = retrieval_result["final_documents"]
@@ -209,13 +213,23 @@ class DocumentRAGPipeline:
         standalone_question: str,
         answer_mode: str,
         top_k: int,
+        source_filter: str | None = None,
+        source_names: list[str] | None = None,
     ) -> dict[str, Any]:
         """Run query expansion, hybrid retrieval, neighbor expansion, and reranking."""
         retrieval_top_k = (
             self.config.exhaustive_top_k if answer_mode == "exhaustive" else top_k
         )
         generated_queries = self.queries.generate_search_queries(standalone_question)
-        retrieved = self.retriever.retrieve(vectorstore, generated_queries, top_k=retrieval_top_k)
+        use_diverse = not source_filter and (source_names or []) and len(source_names) > 1
+        if use_diverse:
+            retrieved = self.retriever.retrieve_diverse(
+                vectorstore, generated_queries, top_k=retrieval_top_k, source_names=source_names
+            )
+        else:
+            retrieved = self.retriever.retrieve(
+                vectorstore, generated_queries, top_k=retrieval_top_k, source_filter=source_filter
+            )
         unique = deduplicate_documents(retrieved)
         expanded = self.retriever.expand_neighbor_chunks(vectorstore, unique)
         reranked = self.reranker.rerank(standalone_question, expanded)

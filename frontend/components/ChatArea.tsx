@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { AlertCircle, FileUp, Loader2, Send } from "lucide-react";
+import { AlertCircle, FileUp, FileText, Layers, Loader2, Send, X } from "lucide-react";
 import { MessageBubble } from "./MessageBubble";
 import type { ChatMessage, ChatResponse } from "@/types";
 
@@ -13,6 +13,8 @@ interface Props {
   isIndexing: boolean;
   onSend: (question: string) => void;
   onShowEvidence: (evidence: ChatResponse) => void;
+  selectedDocumentName: string | null;
+  onClearSelection: () => void;
 }
 
 export function ChatArea({
@@ -23,6 +25,8 @@ export function ChatArea({
   isIndexing,
   onSend,
   onShowEvidence,
+  selectedDocumentName,
+  onClearSelection,
 }: Props) {
   const [input, setInput] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -85,6 +89,29 @@ export function ChatArea({
           </div>
 
           <div className="border-t border-bg-border px-5 py-4 sm:px-8 lg:px-10">
+            {hasDocuments && (
+              <div className="mx-auto mb-3 flex w-full max-w-3xl items-center gap-2">
+                {selectedDocumentName ? (
+                  <span className="flex items-center gap-1.5 rounded-full border border-blue-700/50 bg-blue-950/40 px-3 py-1 text-xs text-blue-300">
+                    <FileText size={11} className="shrink-0" />
+                    <span className="max-w-[200px] truncate">{selectedDocumentName}</span>
+                    <button
+                      type="button"
+                      onClick={onClearSelection}
+                      className="ml-0.5 rounded-full p-0.5 hover:bg-blue-800/50 transition-colors"
+                      title="Switch to all files"
+                    >
+                      <X size={10} />
+                    </button>
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1.5 rounded-full border border-bg-border bg-bg-elevated px-3 py-1 text-xs text-slate-500">
+                    <Layers size={11} className="shrink-0" />
+                    All files
+                  </span>
+                )}
+              </div>
+            )}
             {chatError && (
               <div className="mx-auto mb-3 flex w-full max-w-3xl items-start gap-2 rounded-xl border border-red-900/40 bg-red-950/30 px-3 py-2 text-sm text-red-400">
                 <AlertCircle size={14} className="mt-0.5 shrink-0" />

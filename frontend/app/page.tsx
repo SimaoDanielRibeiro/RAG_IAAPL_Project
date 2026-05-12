@@ -29,6 +29,7 @@ export default function Home() {
   const [activeEvidence, setActiveEvidence] = useState<ChatResponse | null>(null);
   const [evidenceOpen, setEvidenceOpen] = useState(false);
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>("open");
+  const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null);
 
   const chatHistoryRef = useRef<Array<{ role: string; content: string }>>([]);
 
@@ -50,10 +51,15 @@ export default function Home() {
     }
   }, []);
 
+  const handleSelectDocument = useCallback((id: string) => {
+    setSelectedDocumentId((prev) => (prev === id ? null : id));
+  }, []);
+
   const handleRemoveDocument = useCallback(async (id: string) => {
     try {
       await api.removeDocument(id);
       setDocuments((prev) => prev.filter((d) => d.id !== id));
+      if (selectedDocumentId === id) setSelectedDocumentId(null);
       if (documents.length <= 1) {
         chatHistoryRef.current = [];
         setMessages([]);
@@ -62,12 +68,13 @@ export default function Home() {
     } catch (err: unknown) {
       setIndexError(err instanceof Error ? err.message : "Remove failed.");
     }
-  }, [documents.length]);
+  }, [documents.length, selectedDocumentId]);
 
   const handleRemoveAll = useCallback(async () => {
     try {
       await api.removeAllDocuments();
       setDocuments([]);
+      setSelectedDocumentId(null);
       chatHistoryRef.current = [];
       setMessages([]);
       setActiveEvidence(null);
@@ -91,8 +98,9 @@ export default function Home() {
     chatHistoryRef.current.push({ role: "user", content: question });
 
     setIsAnswering(true);
+    const scope = selectedDocumentId ? "selected" : "all";
     try {
-      const response = await api.chat(question, answerMode, chatHistoryRef.current.slice(-8));
+      const response = await api.chat(question, answerMode, chatHistoryRef.current.slice(-8), scope, selectedDocumentId);
       const assistantMsg: ChatMessage = {
         id: uuidv4(),
         role: "assistant",
@@ -111,7 +119,7 @@ export default function Home() {
     } finally {
       setIsAnswering(false);
     }
-  }, [isAnswering, answerMode]);
+  }, [isAnswering, answerMode, selectedDocumentId]);
 
   const handleSummary = useCallback(async () => {
     if (isAnswering) return;
@@ -166,6 +174,8 @@ export default function Home() {
         onAnswerModeChange={setAnswerMode}
         onSummary={handleSummary}
         isAnswering={isAnswering}
+        selectedDocumentId={selectedDocumentId}
+        onSelectDocument={handleSelectDocument}
       />
 
       <div className="flex flex-col flex-1 min-w-0">
@@ -182,6 +192,12 @@ export default function Home() {
           isIndexing={isIndexing}
           onSend={handleSend}
           onShowEvidence={handleShowEvidence}
+          selectedDocumentName={
+            selectedDocumentId
+              ? (documents.find((d) => d.id === selectedDocumentId)?.name ?? null)
+              : null
+          }
+          onClearSelection={() => setSelectedDocumentId(null)}
         />
       </div>
 

@@ -123,15 +123,25 @@ class RAGService:
         question: str,
         answer_mode: str = "standard",
         chat_history: list[dict] | None = None,
+        document_id: str | None = None,
+        scope: str = "all",
     ) -> dict[str, Any]:
         if self._vectorstore is None:
             raise ValueError("No documents indexed. Upload documents first.")
+        source_filter: str | None = None
+        if scope == "selected" and document_id:
+            record = next((d for d in self._documents if d.id == document_id), None)
+            if record:
+                source_filter = record.name
+        source_names = [d.name for d in self._documents]
         return self._get_pipeline().answer_question(
             self._vectorstore,
             question,
             None,
             chat_history or [],
             answer_mode,
+            source_filter=source_filter,
+            source_names=source_names,
         )
 
     def summarize(self) -> dict[str, Any]:

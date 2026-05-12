@@ -22,6 +22,10 @@ export function EvidencePanel({ evidence, onClose }: EvidencePanelProps) {
   const confidence = evidence?.confidence ?? null;
   const conf       = confidence ? CONFIDENCE_STYLES[confidence] : null;
 
+  const citations        = evidence?.citations ?? [];
+  const sourceDistrib    = evidence?.source_distribution ?? {};
+  const sourceCount      = Object.keys(sourceDistrib).length;
+
   return (
     <motion.aside
       initial={{ x: 40, opacity: 0 }}
@@ -65,8 +69,62 @@ export function EvidencePanel({ evidence, onClose }: EvidencePanelProps) {
           </button>
         </header>
 
-        {/* ── Cards ──────────────────────────────── */}
+        {/* ── Scrollable body ─────────────────────── */}
         <div className="min-h-0 flex-1 overflow-y-auto px-7 pb-6">
+
+          {/* Citations */}
+          {citations.length > 0 && (
+            <section className="mb-5">
+              <p className="mb-2.5 text-[11px] font-medium uppercase tracking-[0.06em] text-muted">
+                Citations
+              </p>
+              <ul className="space-y-1.5">
+                {citations.map((c, i) => (
+                  <li key={i} className="flex items-start gap-2 text-[13px] leading-5 text-secondary">
+                    <span className="mt-px shrink-0 text-accent">›</span>
+                    {c}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {/* Source distribution — only when multiple files contributed */}
+          {sourceCount > 1 && (
+            <section className="mb-5">
+              <p className="mb-2.5 text-[11px] font-medium uppercase tracking-[0.06em] text-muted">
+                Source distribution
+              </p>
+              <ul className="space-y-3">
+                {Object.entries(sourceDistrib)
+                  .sort((a, b) => b[1] - a[1])
+                  .map(([source, count]) => {
+                    const total = Object.values(sourceDistrib).reduce((s, n) => s + n, 0);
+                    const pct   = Math.round((count / total) * 100);
+                    return (
+                      <li key={source} className="space-y-1">
+                        <div className="flex items-center justify-between gap-2 text-[12px]">
+                          <span className="min-w-0 truncate text-secondary" title={source}>
+                            {source}
+                          </span>
+                          <span className="shrink-0 text-muted">
+                            {count} chunk{count !== 1 ? "s" : ""} · {pct}%
+                          </span>
+                        </div>
+                        <div className="h-1 w-full rounded-full bg-elevated">
+                          <div
+                            className="h-1 rounded-full bg-accent transition-all"
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                      </li>
+                    );
+                  })}
+              </ul>
+            </section>
+          )}
+
+          {/* ── Cards ──────────────────────────────── */}
           {chunks.length ? (
             <div className="space-y-3">
               {chunks.map((chunk, index) => (

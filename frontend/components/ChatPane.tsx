@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { Check, Copy, Upload } from "lucide-react";
+import { Check, Copy, Layers, Upload, X } from "lucide-react";
 import { Composer } from "@/components/Composer";
 import { Logo } from "@/components/Logo";
 import type { ChatMessage, DocumentInfo } from "@/types";
@@ -14,8 +14,10 @@ type ChatPaneProps = {
   isAnswering: boolean;
   isIndexing: boolean;
   chatError: string | null;
+  chatScope: "all" | "selected";
   onSend: (question: string) => void;
   onUpload: (files: File[]) => void;
+  onClearScope: () => void;
 };
 
 export function ChatPane({
@@ -25,8 +27,10 @@ export function ChatPane({
   isAnswering,
   isIndexing,
   chatError,
+  chatScope,
   onSend,
   onUpload,
+  onClearScope,
 }: ChatPaneProps) {
   // Scroll anchor — sits at the very bottom of the message list
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -63,6 +67,26 @@ export function ChatPane({
               <span className="h-1.5 w-1.5 rounded-full bg-ready" />
               Ready
             </span>
+
+            {/* Scope badge — only shown when multiple files are loaded */}
+            {documentCount > 1 && (
+              chatScope === "selected" ? (
+                <button
+                  type="button"
+                  onClick={onClearScope}
+                  title="Click to search all files"
+                  className="inline-flex items-center gap-1.5 rounded-full border border-accent/40 bg-accent/10 px-2.5 py-0.5 text-[12px] font-medium text-accent transition-colors hover:bg-accent/20"
+                >
+                  <span className="max-w-[160px] truncate">{document?.name}</span>
+                  <X size={11} strokeWidth={2} />
+                </button>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-line px-2.5 py-0.5 text-[12px] text-secondary">
+                  <Layers size={11} strokeWidth={1.8} />
+                  All files
+                </span>
+              )
+            )}
           </div>
         </div>
       </header>

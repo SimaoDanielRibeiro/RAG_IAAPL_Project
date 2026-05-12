@@ -18,6 +18,7 @@ import type {
 export default function App() {
   const [documents,          setDocuments]          = useState<DocumentInfo[]>([]);
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null);
+  const [chatScope,          setChatScope]          = useState<"all" | "selected">("all");
   const [messages,           setMessages]           = useState<ChatMessage[]>([]);
   const [activeEvidence,     setActiveEvidence]     = useState<ChatResponse | null>(null);
   const [evidenceOpen,       setEvidenceOpen]       = useState(true);
@@ -84,6 +85,12 @@ export default function App() {
     }
   }, []);
 
+  /* ── Select document (focuses scope) ───────────── */
+  const handleSelectDocument = useCallback((id: string) => {
+    setSelectedDocumentId(id);
+    setChatScope("selected");
+  }, []);
+
   /* ── Remove single document ─────────────────────── */
   // Uses functional setState to avoid stale closure on `documents`
   const handleRemoveDocument = useCallback(async (id: string) => {
@@ -93,8 +100,10 @@ export default function App() {
       await api.removeDocument(id);
       // Use functional form — reads latest state, not closure snapshot
       setDocuments((prev) => prev.filter((d) => d.id !== id));
-      setSelectedDocumentId((sel) => (sel === id ? null : sel));
-      // selectedDocument memo will fall back to documents[0] if sel becomes null
+      setSelectedDocumentId((sel) => {
+        if (sel === id) { setChatScope("all"); return null; }
+        return sel;
+      });
     } catch (error) {
       setUploadError(
         error instanceof Error ? error.message : "Could not remove document.",
@@ -132,6 +141,8 @@ export default function App() {
           userMessage.content,
           answerMode,
           chatHistoryRef.current.slice(-8),
+          chatScope,
+          chatScope === "selected" ? selectedDocumentId : null,
         );
         const assistantMessage: ChatMessage = {
           id: uuidv4(),
@@ -156,7 +167,7 @@ export default function App() {
         setIsAnswering(false);
       }
     },
-    [answerMode, documents.length, isAnswering],
+    [answerMode, chatScope, documents.length, isAnswering, selectedDocumentId],
   );
 
   return (
@@ -172,7 +183,7 @@ export default function App() {
           answerMode={answerMode}
           onAnswerModeChange={setAnswerMode}
           onUpload={handleUpload}
-          onSelectDocument={setSelectedDocumentId}
+          onSelectDocument={handleSelectDocument}
           onNewChat={handleNewChat}
           onRemoveDocument={handleRemoveDocument}
         />
@@ -184,8 +195,10 @@ export default function App() {
           isAnswering={isAnswering}
           isIndexing={isIndexing}
           chatError={chatError}
+          chatScope={chatScope}
           onSend={handleSend}
           onUpload={handleUpload}
+          onClearScope={() => setChatScope("all")}
         />
 
         <AnimatePresence initial={false}>

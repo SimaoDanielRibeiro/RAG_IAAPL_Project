@@ -48,12 +48,20 @@ export const api = {
   chat(
     question: string,
     answerMode: AnswerMode,
-    chatHistory: Array<{ role: string; content: string }>
+    chatHistory: Array<{ role: string; content: string }>,
+    scope: "all" | "selected" = "all",
+    documentId: string | null = null
   ): Promise<ChatResponse> {
     return request("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, answer_mode: answerMode, chat_history: chatHistory }),
+      body: JSON.stringify({
+        question,
+        answer_mode: answerMode,
+        chat_history: chatHistory,
+        scope,
+        document_id: documentId,
+      }),
     });
   },
 

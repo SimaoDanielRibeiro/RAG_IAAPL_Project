@@ -1,12 +1,13 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap");
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  --scrollbar-track: #1a1a1a;
-  --scrollbar-thumb: #2e2e2e;
+  color-scheme: dark;
+  --scrollbar-track: #0a0a0a;
+  --scrollbar-thumb: #262626;
 }
 
 * {
@@ -16,80 +17,65 @@
 html,
 body {
   height: 100%;
-  background-color: #111111;
-  color: #e2e8f0;
+  margin: 0;
+  background: #0a0a0a;
+  color: #f5f5f5;
+  font-family: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
 }
 
-/* Slim scrollbar */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+button,
+textarea {
+  font: inherit;
 }
+
+button {
+  letter-spacing: 0;
+}
+
+::selection {
+  background: rgba(224, 177, 91, 0.22);
+}
+
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
 ::-webkit-scrollbar-track {
   background: var(--scrollbar-track);
 }
+
 ::-webkit-scrollbar-thumb {
   background: var(--scrollbar-thumb);
-  border-radius: 3px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: #3d3d3d;
+  border-radius: 999px;
 }
 
-/* Markdown prose inside assistant messages */
-.prose-dark h1,
-.prose-dark h2,
-.prose-dark h3 {
-  color: #e2e8f0;
-  font-weight: 600;
-  margin-top: 1em;
-  margin-bottom: 0.4em;
+::-webkit-scrollbar-thumb:hover {
+  background: #333333;
 }
-.prose-dark p {
-  color: #cbd5e1;
-  line-height: 1.7;
-  margin-bottom: 0.6em;
+
+@keyframes lumen-caret {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  46%,
+  100% {
+    opacity: 0;
+  }
 }
-.prose-dark ul,
-.prose-dark ol {
-  color: #cbd5e1;
-  padding-left: 1.4em;
-  margin-bottom: 0.6em;
+
+@keyframes lumen-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
-.prose-dark li {
-  margin-bottom: 0.25em;
+
+.lumen-caret {
+  animation: lumen-caret 1s steps(1, end) infinite;
 }
-.prose-dark code {
-  background: #2e2e2e;
-  color: #93c5fd;
-  padding: 0.15em 0.4em;
-  border-radius: 4px;
-  font-size: 0.85em;
-  font-family: "JetBrains Mono", monospace;
-}
-.prose-dark pre {
-  background: #1a1a1a;
-  border: 1px solid #2e2e2e;
-  border-radius: 8px;
-  padding: 1em;
-  overflow-x: auto;
-  margin-bottom: 0.8em;
-}
-.prose-dark pre code {
-  background: none;
-  padding: 0;
-}
-.prose-dark strong {
-  color: #e2e8f0;
-  font-weight: 600;
-}
-.prose-dark blockquote {
-  border-left: 3px solid #3b82f6;
-  padding-left: 1em;
-  color: #94a3b8;
-  font-style: italic;
-}
-.prose-dark a {
-  color: #60a5fa;
-  text-decoration: underline;
+
+.lumen-spinner {
+  animation: lumen-spin 850ms linear infinite;
 }

@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment files
+.env
+.env.local
+
+# Project data and runtime artifacts
+data/*
+!data/.gitkeep
+chroma_db/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# OS
+Thumbs.db
+
+.claude/
+
+# Next.js
+frontend/.next/
+frontend/node_modules/
+frontend/.env.local

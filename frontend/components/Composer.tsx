@@ -11,7 +11,7 @@ type ComposerProps = {
 };
 
 // Single source of truth — paperclip, textarea (1 row), and send button
-// are all this tall. items-end keeps them aligned as the textarea grows.
+// are all this tall. items-center keeps them aligned on single-line input.
 const CONTROL_HEIGHT = 36;
 const MAX_HEIGHT     = 200;
 
@@ -45,7 +45,7 @@ export function Composer({ disabled, busy, onSend, onUpload }: ComposerProps) {
       className="w-full"
     >
       <div className="rounded-[14px] border border-line bg-elevated transition-colors focus-within:border-[rgba(224,177,91,0.34)]">
-        <div className="flex items-end gap-2 px-3 py-3">
+        <div className="flex items-center gap-2 px-3 py-3">
 
           {/* Attach — same height as send button */}
           <label

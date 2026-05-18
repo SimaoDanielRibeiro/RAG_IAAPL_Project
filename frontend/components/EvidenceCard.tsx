@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Check, Copy, Expand, Quote } from "lucide-react";
+import { motion } from "framer-motion";
+import { Check, Copy, Expand } from "lucide-react";
 import type { ChunkInfo } from "@/types";
 
 // Constant outside the component — not recreated on every render
@@ -11,12 +12,20 @@ const SNIPPET_THRESHOLD = 280;
 type EvidenceCardProps = {
   chunk: ChunkInfo;
   index: number;
+  isHighlighted?: boolean;
 };
 
-export function EvidenceCard({ chunk, index }: EvidenceCardProps) {
+export function EvidenceCard({ chunk, index, isHighlighted }: EvidenceCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [copied,   setCopied]   = useState(false);
-  const [cited,    setCited]    = useState(false);
+  const articleRef               = useRef<HTMLElement>(null);
+
+  // Scroll into view when this card becomes the highlighted one
+  useEffect(() => {
+    if (isHighlighted) {
+      articleRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [isHighlighted]);
 
   const fullText    = (chunk.snippet ?? "").replace(/\s+/g, " ").trim();
   const needsMore   = fullText.length > SNIPPET_THRESHOLD;
@@ -35,18 +44,22 @@ export function EvidenceCard({ chunk, index }: EvidenceCardProps) {
     } catch {}
   };
 
-  const handleCite = async () => {
-    const citation = `[${chunk.source ?? "Source"}, ${formatPage(chunk.page)}]: "${fullText}"`;
-    try {
-      await navigator.clipboard.writeText(citation);
-      setCited(true);
-      setTimeout(() => setCited(false), 2000);
-    } catch {}
-  };
-
   return (
-    // Plain article — no Framer Motion needed here
-    <article className="group rounded-[10px] border border-line bg-sidebar p-4 transition-colors hover:border-[rgba(255,255,255,0.10)]">
+    <motion.article
+      ref={articleRef}
+      animate={
+        isHighlighted
+          ? {
+              boxShadow: [
+                "0 0 0 0px rgba(224,177,91,0)",
+                "0 0 0 2px rgba(224,177,91,0.55), 0 0 24px rgba(224,177,91,0.35)",
+                "0 0 0 1px rgba(224,177,91,0.25), 0 0 12px rgba(224,177,91,0.10)",
+              ],
+            }
+          : { boxShadow: "0 0 0 0px rgba(224,177,91,0)" }
+      }
+      transition={{ duration: 1.6, ease: "easeOut" }}
+      className="group rounded-[10px] border border-line bg-sidebar/70 p-4 backdrop-blur-sm transition-colors hover:border-[rgba(255,255,255,0.10)]">
 
       {/* ── Card header ──────────────────────────────── */}
       <div className="flex items-start gap-3">
@@ -126,12 +139,6 @@ export function EvidenceCard({ chunk, index }: EvidenceCardProps) {
             : <Copy size={14} />}
         </ActionBtn>
 
-        <ActionBtn label={cited ? "Cited!" : "Cite"} onClick={handleCite}>
-          {cited
-            ? <Check size={14} className="text-accent" />
-            : <Quote size={14} />}
-        </ActionBtn>
-
         <ActionBtn
           label={expanded ? "Collapse" : "Expand"}
           onClick={() => setExpanded((v) => !v)}
@@ -139,7 +146,7 @@ export function EvidenceCard({ chunk, index }: EvidenceCardProps) {
           <Expand size={14} />
         </ActionBtn>
       </div>
-    </article>
+    </motion.article>
   );
 }
 

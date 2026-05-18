@@ -28,8 +28,7 @@ class ChatRequest(BaseModel):
     question: str
     answer_mode: str = "standard"
     chat_history: list[dict] = Field(default_factory=list)
-    document_id: Optional[str] = None
-    scope: str = "all"  # "all" or "selected"
+    document_ids: list[str] = Field(default_factory=list)
 
 
 class ChunkInfo(BaseModel):
@@ -52,7 +51,7 @@ class ChatResponse(BaseModel):
     documents: list[ChunkInfo]
     answer_mode: str
     source_distribution: dict[str, int] = Field(default_factory=dict)
-    scope: str = "all"
+    document_ids: list[str] = Field(default_factory=list)
 
 
 class SummaryEntry(BaseModel):

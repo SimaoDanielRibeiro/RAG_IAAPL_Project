@@ -6,7 +6,7 @@ import logging
 import os
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Optional
 
 from dotenv import load_dotenv
 
@@ -17,7 +17,7 @@ load_dotenv()
 
 LOGGER = configure_logging()
 
-CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "llama3.2:3b")
+CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5:7b-instruct")
 EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
 
 MAX_FILE_SIZE_MB = 200
@@ -118,31 +118,60 @@ class RAGService:
     # ------------------------------------------------------------------
     # Q&A + summary
     # ------------------------------------------------------------------
+    def _resolve_active_sources(self, document_ids: list[str] | None) -> list[str]:
+        source_names_all = [d.name for d in self._documents]
+        if document_ids:
+            selected = [d.name for d in self._documents if d.id in document_ids]
+            return selected or source_names_all
+        return source_names_all
+
     def answer_question(
         self,
         question: str,
         answer_mode: str = "standard",
         chat_history: list[dict] | None = None,
-        document_id: str | None = None,
-        scope: str = "all",
+        document_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         if self._vectorstore is None:
             raise ValueError("No documents indexed. Upload documents first.")
-        source_filter: str | None = None
-        if scope == "selected" and document_id:
-            record = next((d for d in self._documents if d.id == document_id), None)
-            if record:
-                source_filter = record.name
-        source_names = [d.name for d in self._documents]
+        active_sources = self._resolve_active_sources(document_ids)
         return self._get_pipeline().answer_question(
             self._vectorstore,
             question,
             None,
             chat_history or [],
             answer_mode,
-            source_filter=source_filter,
-            source_names=source_names,
+            source_filter=None,
+            source_names=active_sources,
         )
+
+    def prepare_answer(
+        self,
+        question: str,
+        answer_mode: str = "standard",
+        chat_history: list[dict] | None = None,
+        document_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        if self._vectorstore is None:
+            raise ValueError("No documents indexed. Upload documents first.")
+        active_sources = self._resolve_active_sources(document_ids)
+        return self._get_pipeline().prepare_answer(
+            self._vectorstore,
+            question,
+            None,
+            chat_history or [],
+            answer_mode,
+            source_filter=None,
+            source_names=active_sources,
+        )
+
+    async def astream_answer(
+        self, context: str, question: str, answer_mode: str
+    ) -> AsyncIterator[str]:
+        async for token in self._get_pipeline().astream_answer(
+            context, question, answer_mode
+        ):
+            yield token
 
     def summarize(self) -> dict[str, Any]:
         if self._vectorstore is None:

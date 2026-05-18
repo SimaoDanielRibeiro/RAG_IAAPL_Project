@@ -20,14 +20,14 @@ cd C:\Users\simao\Desktop\RAG_Project
 Pull the local models:
 
 ```powershell
-ollama pull llama3.2:3b
+ollama pull qwen2.5:7b-instruct
 ollama pull nomic-embed-text
 ```
 
 Optional: copy `.env.example` to `.env` and edit the model names:
 
 ```env
-OLLAMA_CHAT_MODEL=llama3.2:3b
+OLLAMA_CHAT_MODEL=qwen2.5:7b-instruct
 OLLAMA_EMBEDDING_MODEL=nomic-embed-text
 ```
 

@@ -1,13 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { PanelRightOpen } from "lucide-react";
 import { v4 as uuidv4 } from "uuid";
 import { ChatPane } from "@/components/ChatPane";
 import { EvidencePanel } from "@/components/EvidencePanel";
+import { LandingScreen } from "@/components/LandingScreen";
 import { Sidebar } from "@/components/Sidebar";
 import { api } from "@/lib/api";
+import { stripMarkdown } from "@/lib/text";
 import type {
   AnswerMode,
   ChatMessage,
@@ -16,44 +18,37 @@ import type {
 } from "@/types";
 
 export default function App() {
-  const [documents,          setDocuments]          = useState<DocumentInfo[]>([]);
-  const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null);
-  const [chatScope,          setChatScope]          = useState<"all" | "selected">("all");
-  const [messages,           setMessages]           = useState<ChatMessage[]>([]);
-  const [activeEvidence,     setActiveEvidence]     = useState<ChatResponse | null>(null);
-  const [evidenceOpen,       setEvidenceOpen]       = useState(true);
-  const [answerMode,         setAnswerMode]         = useState<AnswerMode>("standard");
-  const [isIndexing,         setIsIndexing]         = useState(false);
-  const [isAnswering,        setIsAnswering]        = useState(false);
-  const [uploadError,        setUploadError]        = useState<string | null>(null);
-  const [chatError,          setChatError]          = useState<string | null>(null);
-  const [statusMessage,      setStatusMessage]      = useState<string | null>(null);
+  const [showLanding, setShowLanding] = useState(true);
+  const [documents, setDocuments] = useState<DocumentInfo[]>([]);
+  const [highlightedChunk, setHighlightedChunk] = useState<number | null>(null);
+  const [streamingId, setStreamingId] = useState<string | null>(null);
+  const [selectedDocumentIds, setSelectedDocumentIds] = useState<string[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [activeEvidence, setActiveEvidence] = useState<ChatResponse | null>(null);
+  const [evidenceOpen, setEvidenceOpen] = useState(true);
+  const [answerMode, setAnswerMode] = useState<AnswerMode>("standard");
+  const [isIndexing, setIsIndexing] = useState(false);
+  const [isAnswering, setIsAnswering] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [chatError, setChatError] = useState<string | null>(null);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   const chatHistoryRef = useRef<Array<{ role: string; content: string }>>([]);
 
-  /* When every document is removed, reset the conversation */
   useEffect(() => {
     if (documents.length === 0) {
       setMessages([]);
       chatHistoryRef.current = [];
       setActiveEvidence(null);
+      setSelectedDocumentIds([]);
     }
   }, [documents.length]);
 
-  const selectedDocument = useMemo(
-    () =>
-      documents.find((d) => d.id === selectedDocumentId) ??
-      documents[0] ??
-      null,
-    [documents, selectedDocumentId],
-  );
-
-  /* ── Initial load ───────────────────────────────── */
   const refreshDocuments = useCallback(async () => {
     const current = await api.listDocuments();
     setDocuments(current);
-    setSelectedDocumentId((sel) =>
-      current.some((d) => d.id === sel) ? sel : (current[0]?.id ?? null),
+    setSelectedDocumentIds((prev) =>
+      prev.filter((id) => current.some((d) => d.id === id)),
     );
   }, []);
 
@@ -63,7 +58,6 @@ export default function App() {
     });
   }, [refreshDocuments]);
 
-  /* ── Upload ─────────────────────────────────────── */
   const handleUpload = useCallback(async (files: File[]) => {
     if (!files.length) return;
     setUploadError(null);
@@ -72,9 +66,8 @@ export default function App() {
     try {
       const result = await api.uploadDocuments(files);
       setDocuments(result.documents);
-      setSelectedDocumentId(result.documents[0]?.id ?? null);
+      setSelectedDocumentIds([]);
       setStatusMessage(result.message);
-      // Uploading new files starts a fresh chat session
       setMessages([]);
       chatHistoryRef.current = [];
       setActiveEvidence(null);
@@ -85,33 +78,26 @@ export default function App() {
     }
   }, []);
 
-  /* ── Select document (focuses scope) ───────────── */
-  const handleSelectDocument = useCallback((id: string) => {
-    setSelectedDocumentId(id);
-    setChatScope("selected");
+  const handleToggleDocument = useCallback((id: string) => {
+    setSelectedDocumentIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
   }, []);
 
-  /* ── Remove single document ─────────────────────── */
-  // Uses functional setState to avoid stale closure on `documents`
   const handleRemoveDocument = useCallback(async (id: string) => {
     setUploadError(null);
     setStatusMessage(null);
     try {
       await api.removeDocument(id);
-      // Use functional form — reads latest state, not closure snapshot
       setDocuments((prev) => prev.filter((d) => d.id !== id));
-      setSelectedDocumentId((sel) => {
-        if (sel === id) { setChatScope("all"); return null; }
-        return sel;
-      });
+      setSelectedDocumentIds((prev) => prev.filter((x) => x !== id));
     } catch (error) {
       setUploadError(
         error instanceof Error ? error.message : "Could not remove document.",
       );
     }
-  }, []); // no deps needed — only uses functional setters
+  }, []);
 
-  /* ── New chat ───────────────────────────────────── */
   const handleNewChat = useCallback(() => {
     setMessages([]);
     setChatError(null);
@@ -119,7 +105,6 @@ export default function App() {
     chatHistoryRef.current = [];
   }, []);
 
-  /* ── Send question ──────────────────────────────── */
   const handleSend = useCallback(
     async (question: string) => {
       if (!question.trim() || isAnswering || !documents.length) return;
@@ -130,75 +115,136 @@ export default function App() {
         content: question.trim(),
         timestamp: new Date(),
       };
+      const assistantId = uuidv4();
+      const assistantMessage: ChatMessage = {
+        id: assistantId,
+        role: "assistant",
+        content: "",
+        timestamp: new Date(),
+      };
 
-      setMessages((prev) => [...prev, userMessage]);
+      setMessages((prev) => [...prev, userMessage, assistantMessage]);
       setChatError(null);
       setIsAnswering(true);
+      setStreamingId(assistantId);
       chatHistoryRef.current.push({ role: "user", content: userMessage.content });
 
+      let accumulated = "";
+      let evidenceResponse: ChatResponse | null = null;
+
       try {
-        const response = await api.chat(
+        const scopeIds =
+          selectedDocumentIds.length === 0 ||
+          selectedDocumentIds.length === documents.length
+            ? []
+            : selectedDocumentIds;
+
+        await api.chatStream(
           userMessage.content,
           answerMode,
           chatHistoryRef.current.slice(-8),
-          chatScope,
-          chatScope === "selected" ? selectedDocumentId : null,
+          scopeIds,
+          {
+            onMetadata: (meta) => {
+              // The backend metadata is the full ChatResponse minus `answer`.
+              // We cast to ChatResponse with answer filled in later from tokens.
+              const initialEvidence = { ...meta, answer: "" } as ChatResponse;
+              evidenceResponse = initialEvidence;
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId ? { ...m, evidence: initialEvidence } : m,
+                ),
+              );
+              setActiveEvidence(initialEvidence);
+              setEvidenceOpen(true);
+            },
+            onToken: (token) => {
+              accumulated += token;
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId ? { ...m, content: accumulated } : m,
+                ),
+              );
+            },
+            onDone: () => {
+              // Lock in the final answer on the evidence object too,
+              // in case anything downstream reads from it.
+              if (evidenceResponse) {
+                const finalEvidence = { ...evidenceResponse, answer: accumulated };
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === assistantId ? { ...m, evidence: finalEvidence } : m,
+                  ),
+                );
+                setActiveEvidence(finalEvidence);
+              }
+            },
+          },
         );
-        const assistantMessage: ChatMessage = {
-          id: uuidv4(),
-          role: "assistant",
-          content: response.answer,
-          evidence: response,
-          timestamp: new Date(),
-        };
-        setMessages((prev) => [...prev, assistantMessage]);
+
         chatHistoryRef.current.push({
           role: "assistant",
-          content: response.answer,
+          content: stripMarkdown(accumulated),
         });
-        setActiveEvidence(response);
-        setEvidenceOpen(true);
       } catch (error) {
-        chatHistoryRef.current.pop(); // revert optimistic push
+        chatHistoryRef.current.pop();
+        setMessages((prev) => prev.filter((m) => m.id !== assistantId));
         setChatError(
           error instanceof Error ? error.message : "Chat request failed.",
         );
       } finally {
         setIsAnswering(false);
+        setStreamingId(null);
       }
     },
-    [answerMode, chatScope, documents.length, isAnswering, selectedDocumentId],
+    [answerMode, documents.length, isAnswering, selectedDocumentIds],
+  );
+
+  const handleCitationClick = useCallback(
+    (chunkIdx: number, evidence: ChatResponse) => {
+      setActiveEvidence(evidence);
+      setEvidenceOpen(true);
+      setHighlightedChunk(chunkIdx);
+      setTimeout(() => setHighlightedChunk(null), 2400);
+    },
+    [],
   );
 
   return (
-    <main className="h-screen overflow-hidden bg-app text-primary">
-      <div className="flex h-full min-w-[900px]">
+    <main className="relative h-screen overflow-hidden bg-app text-primary">
+      <MeshBackground />
 
+      {showLanding && (
+        <LandingScreen onEnter={() => setShowLanding(false)} />
+      )}
+
+      <div className="relative z-10 flex h-full min-w-[900px]">
         <Sidebar
           documents={documents}
-          selectedDocumentId={selectedDocument?.id ?? null}
+          selectedDocumentIds={selectedDocumentIds}
           isIndexing={isIndexing}
           uploadError={uploadError}
           statusMessage={statusMessage}
           answerMode={answerMode}
           onAnswerModeChange={setAnswerMode}
           onUpload={handleUpload}
-          onSelectDocument={handleSelectDocument}
+          onToggleDocument={handleToggleDocument}
           onNewChat={handleNewChat}
           onRemoveDocument={handleRemoveDocument}
         />
 
         <ChatPane
-          document={selectedDocument}
-          documentCount={documents.length}
+          documents={documents}
           messages={messages}
           isAnswering={isAnswering}
           isIndexing={isIndexing}
           chatError={chatError}
-          chatScope={chatScope}
+          selectedDocumentIds={selectedDocumentIds}
+          streamingId={streamingId}
           onSend={handleSend}
           onUpload={handleUpload}
-          onClearScope={() => setChatScope("all")}
+          onClearScope={() => setSelectedDocumentIds([])}
+          onCitationClick={handleCitationClick}
         />
 
         <AnimatePresence initial={false}>
@@ -206,6 +252,7 @@ export default function App() {
             <EvidencePanel
               key="evidence-panel"
               evidence={activeEvidence}
+              highlightedIndex={highlightedChunk}
               onClose={() => setEvidenceOpen(false)}
             />
           ) : (
@@ -218,14 +265,61 @@ export default function App() {
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: 12 }}
               transition={{ duration: 0.18, ease: "easeOut" }}
-              className="fixed right-0 top-1/2 z-30 flex h-24 w-7 -translate-y-1/2 items-center justify-center rounded-l-md border border-r-0 border-line bg-sidebar text-accent transition-colors hover:bg-hover"
+              className="fixed right-0 top-1/2 z-30 flex h-24 w-7 -translate-y-1/2 items-center justify-center rounded-l-md border border-r-0 border-line bg-sidebar/70 text-accent backdrop-blur-xl transition-colors hover:bg-hover/80"
             >
               <PanelRightOpen size={15} strokeWidth={1.8} />
             </motion.button>
           )}
         </AnimatePresence>
-
       </div>
     </main>
+  );
+}
+
+/* ── Animated mesh-gradient backdrop ──────────────────────
+   Three large blurred radial blobs drifting slowly. Sits
+   behind the glassmorphic Sidebar / EvidencePanel so the
+   backdrop-blur picks up motion and color. */
+
+function MeshBackground() {
+  return (
+    <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
+      <motion.div
+        animate={{ x: [0, 80, -40, 0], y: [0, 50, -30, 0] }}
+        transition={{ duration: 28, repeat: Infinity, ease: "easeInOut" }}
+        className="absolute -top-40 left-[10%] h-[720px] w-[720px] rounded-full opacity-70 blur-[120px]"
+        style={{
+          background:
+            "radial-gradient(circle, rgba(224,177,91,0.55), transparent 70%)",
+        }}
+      />
+      <motion.div
+        animate={{ x: [0, -60, 40, 0], y: [0, 40, -50, 0] }}
+        transition={{ duration: 34, repeat: Infinity, ease: "easeInOut" }}
+        className="absolute top-[15%] right-[5%] h-[640px] w-[640px] rounded-full opacity-55 blur-[110px]"
+        style={{
+          background:
+            "radial-gradient(circle, rgba(120,140,220,0.45), transparent 70%)",
+        }}
+      />
+      <motion.div
+        animate={{ x: [0, 50, -30, 0], y: [0, -50, 30, 0] }}
+        transition={{ duration: 38, repeat: Infinity, ease: "easeInOut" }}
+        className="absolute -bottom-40 left-[30%] h-[800px] w-[800px] rounded-full opacity-65 blur-[130px]"
+        style={{
+          background:
+            "radial-gradient(circle, rgba(224,177,91,0.45), transparent 70%)",
+        }}
+      />
+      <motion.div
+        animate={{ x: [0, -40, 30, 0], y: [0, 30, -20, 0] }}
+        transition={{ duration: 32, repeat: Infinity, ease: "easeInOut" }}
+        className="absolute top-[55%] right-[35%] h-[480px] w-[480px] rounded-full opacity-45 blur-[100px]"
+        style={{
+          background:
+            "radial-gradient(circle, rgba(180,120,200,0.35), transparent 70%)",
+        }}
+      />
+    </div>
   );
 }

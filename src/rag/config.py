@@ -53,4 +53,4 @@ class RAGConfig:
     confidence_medium_cutoff: float = 6.0
 
     # Index versioning — bump when stored chunk shape changes
-    index_version: str = "hybrid-rag-v3"
+    index_version: str = "hybrid-rag-v4-layout"

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
+
+from src.rag.config import FALLBACK_ANSWER
 
 from backend.schemas import (
     ChatRequest,
@@ -132,8 +135,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
             req.question,
             req.answer_mode,
             req.chat_history,
-            req.document_id,
-            req.scope,
+            req.document_ids,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
@@ -168,8 +170,94 @@ async def chat(req: ChatRequest) -> ChatResponse:
         documents=chunks,
         answer_mode=result.get("answer_mode", req.answer_mode),
         source_distribution=source_distribution,
-        scope=req.scope,
+        document_ids=req.document_ids,
     )
+
+
+# ------------------------------------------------------------------
+# Chat (streaming)
+# ------------------------------------------------------------------
+def _chunks_payload(documents: list) -> tuple[list[dict], dict[str, int]]:
+    """Shape retrieved documents into the JSON-serializable structure used
+    by both the streaming metadata event and the non-streaming response."""
+    chunks = [
+        {
+            "source":  doc.metadata.get("source", ""),
+            "page":    doc.metadata.get("page"),
+            "score":   doc.metadata.get("rerank_score"),
+            "snippet": doc.page_content[:600],
+        }
+        for doc in documents
+    ]
+    distribution: dict[str, int] = {}
+    for c in chunks:
+        distribution[c["source"]] = distribution.get(c["source"], 0) + 1
+    return chunks, distribution
+
+
+@router.post("/chat/stream")
+async def chat_stream(req: ChatRequest) -> StreamingResponse:
+    if not rag_service.list_documents():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No documents indexed. Upload documents first.",
+        )
+
+    async def event_stream():
+        def ndjson(event: dict) -> str:
+            return json.dumps(event, default=str) + "\n"
+
+        try:
+            prep = await asyncio.to_thread(
+                rag_service.prepare_answer,
+                req.question,
+                req.answer_mode,
+                req.chat_history,
+                req.document_ids,
+            )
+        except ValueError as exc:
+            yield ndjson({"type": "error", "message": str(exc)})
+            return
+        except Exception as exc:
+            LOGGER.exception("Chat stream prepare failed")
+            yield ndjson({"type": "error", "message": str(exc)})
+            return
+
+        chunks, distribution = _chunks_payload(prep.get("documents", []))
+        metadata = {
+            "confidence":          prep.get("confidence", "Low"),
+            "sources":             prep.get("sources", []),
+            "pages":               prep.get("pages", []),
+            "citations":           prep.get("citations", []),
+            "chunks_used":         prep.get("chunks_used", 0),
+            "average_score":       prep.get("average_score"),
+            "queries":             prep.get("queries", []),
+            "retrieval_question":  prep.get("retrieval_question", req.question),
+            "documents":           chunks,
+            "answer_mode":         prep.get("answer_mode", req.answer_mode),
+            "source_distribution": distribution,
+            "document_ids":        req.document_ids,
+        }
+        yield ndjson({"type": "metadata", "data": metadata})
+
+        if prep.get("fallback"):
+            yield ndjson({"type": "token", "text": FALLBACK_ANSWER})
+            yield ndjson({"type": "done"})
+            return
+
+        try:
+            async for token in rag_service.astream_answer(
+                prep["context"], prep["retrieval_question"], req.answer_mode
+            ):
+                yield ndjson({"type": "token", "text": token})
+        except Exception as exc:
+            LOGGER.exception("Chat stream generation failed")
+            yield ndjson({"type": "error", "message": str(exc)})
+            return
+
+        yield ndjson({"type": "done"})
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
 
 # ------------------------------------------------------------------

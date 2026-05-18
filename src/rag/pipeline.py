@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
@@ -49,7 +49,7 @@ class DocumentRAGPipeline:
         self,
         data_dir: str | Path = "data",
         persist_dir: str | Path = "chroma_db",
-        chat_model: str = "llama3.2:3b",
+        chat_model: str = "qwen2.5:7b-instruct",
         embedding_model: str = "nomic-embed-text",
         reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
         logger: logging.Logger | None = None,
@@ -144,7 +144,54 @@ class DocumentRAGPipeline:
         source_filter: str | None = None,
         source_names: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Answer a user question using hybrid retrieval over indexed documents."""
+        """Answer a user question (non-streaming).
+
+        Equivalent to `prepare_answer` followed by `generator.answer` so that
+        the streaming and non-streaming paths share the retrieval phase.
+        """
+        prep = self.prepare_answer(
+            vectorstore=vectorstore,
+            question=question,
+            top_k=top_k,
+            chat_history=chat_history,
+            answer_mode=answer_mode,
+            source_filter=source_filter,
+            source_names=source_names,
+        )
+        if prep.get("fallback"):
+            payload = {k: v for k, v in prep.items() if k != "fallback"}
+            payload["answer"] = FALLBACK_ANSWER
+            return payload
+
+        try:
+            answer = self.generator.answer(
+                prep["context"], prep["retrieval_question"], answer_mode
+            )
+        except Exception as error:
+            self.logger.exception("Answer generation failed")
+            raise RuntimeError(
+                f"Could not generate an answer with the chat model: {error}"
+            ) from error
+
+        payload = {k: v for k, v in prep.items() if k != "fallback"}
+        payload["answer"] = answer
+        return payload
+
+    def prepare_answer(
+        self,
+        vectorstore: Chroma,
+        question: str,
+        top_k: int | None = None,
+        chat_history: list[dict[str, str]] | None = None,
+        answer_mode: str = "standard",
+        source_filter: str | None = None,
+        source_names: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Run retrieval + reranking and return all metadata (no answer yet).
+
+        Adds a `fallback: bool` flag; when True, the caller should emit
+        `FALLBACK_ANSWER` instead of invoking the generator.
+        """
         retrieval_top_k = top_k if top_k is not None else self.config.vector_top_k
         standalone_question = self.queries.rewrite_with_history(question, chat_history or [])
 
@@ -162,18 +209,15 @@ class DocumentRAGPipeline:
         average_score = average_rerank_score(final_docs)
 
         if not context.strip() or has_weak_evidence(final_docs, average_score, self.config):
-            return self._build_fallback_response(generated_queries, standalone_question, answer_mode)
-
-        try:
-            answer = self.generator.answer(context, standalone_question, answer_mode)
-        except Exception as error:
-            self.logger.exception("Answer generation failed")
-            raise RuntimeError(
-                f"Could not generate an answer with the chat model: {error}"
-            ) from error
+            payload = self._build_fallback_response(
+                generated_queries, standalone_question, answer_mode
+            )
+            payload.pop("answer", None)
+            payload["context"] = ""
+            payload["fallback"] = True
+            return payload
 
         return {
-            "answer": answer,
             "documents": final_docs,
             "context": context,
             "confidence": confidence_label(average_score, self.config),
@@ -185,7 +229,15 @@ class DocumentRAGPipeline:
             "citations": format_citations(final_docs),
             "retrieval_question": standalone_question,
             "answer_mode": answer_mode,
+            "fallback": False,
         }
+
+    async def astream_answer(
+        self, context: str, question: str, answer_mode: str
+    ) -> AsyncIterator[str]:
+        """Stream answer tokens from the chat model. Use after `prepare_answer`."""
+        async for token in self.generator.astream(context, question, answer_mode):
+            yield token
 
     # ------------------------------------------------------------------
     # Summarization
@@ -221,7 +273,7 @@ class DocumentRAGPipeline:
             self.config.exhaustive_top_k if answer_mode == "exhaustive" else top_k
         )
         generated_queries = self.queries.generate_search_queries(standalone_question)
-        use_diverse = not source_filter and (source_names or []) and len(source_names) > 1
+        use_diverse = not source_filter and bool(source_names)
         if use_diverse:
             retrieved = self.retriever.retrieve_diverse(
                 vectorstore, generated_queries, top_k=retrieval_top_k, source_names=source_names

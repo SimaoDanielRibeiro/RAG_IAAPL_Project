@@ -31,7 +31,7 @@ export interface ChatResponse {
   documents: ChunkInfo[];
   answer_mode: string;
   source_distribution: Record<string, number>;
-  scope: string;
+  document_ids: string[];
 }
 
 export interface SummaryEntry {

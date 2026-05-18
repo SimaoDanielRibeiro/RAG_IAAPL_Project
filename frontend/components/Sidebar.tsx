@@ -4,52 +4,66 @@ import { useState } from "react";
 import type { ChangeEvent, ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  Boxes,
+  Check,
   ChevronLeft,
   ChevronRight,
   CircleHelp,
+  Copy,
+  ExternalLink,
   FileText,
   Plus,
+  RefreshCw,
   Settings,
   Upload,
   X,
 } from "lucide-react";
 import type { AnswerMode, DocumentInfo } from "@/types";
 import { Logo } from "@/components/Logo";
+import { useOllamaStatus } from "@/lib/useOllamaStatus";
 
 type SidebarProps = {
   documents: DocumentInfo[];
-  selectedDocumentId: string | null;
+  selectedDocumentIds: string[];
   isIndexing: boolean;
   uploadError: string | null;
   statusMessage: string | null;
   answerMode: AnswerMode;
   onAnswerModeChange: (mode: AnswerMode) => void;
   onUpload: (files: File[]) => void;
-  onSelectDocument: (id: string) => void;
+  onToggleDocument: (id: string) => void;
   onNewChat: () => void;
   onRemoveDocument: (id: string) => void;
 };
 
 export function Sidebar({
   documents,
-  selectedDocumentId,
+  selectedDocumentIds,
   isIndexing,
   uploadError,
   statusMessage,
   answerMode,
   onAnswerModeChange,
   onUpload,
-  onSelectDocument,
+  onToggleDocument,
   onNewChat,
   onRemoveDocument,
 }: SidebarProps) {
   const [collapsed,    setCollapsed]    = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [helpOpen,     setHelpOpen]     = useState(false);
+  const [modelsOpen,   setModelsOpen]   = useState(false);
   const [errorVisible, setErrorVisible] = useState(true);
+  const ollama = useOllamaStatus();
 
   // Reset dismissal whenever error/status actually changes
   const notice = uploadError ?? statusMessage ?? null;
+  const orderedDocuments = [...documents].sort((a, b) => {
+    const aSelected = selectedDocumentIds.includes(a.id);
+    const bSelected = selectedDocumentIds.includes(b.id);
+    if (aSelected === bSelected) return 0;
+    return aSelected ? -1 : 1;
+  });
 
   const handleFiles = (event: ChangeEvent<HTMLInputElement>) => {
     onUpload(Array.from(event.target.files ?? []));
@@ -61,7 +75,7 @@ export function Sidebar({
     <motion.aside
       animate={{ width: collapsed ? 64 : 260 }}
       transition={{ duration: 0.2, ease: "easeOut" }}
-      className="flex h-full shrink-0 flex-col bg-sidebar overflow-hidden"
+      className="flex h-full shrink-0 flex-col overflow-hidden border-r border-line bg-sidebar/30 backdrop-blur-2xl"
     >
       <AnimatePresence mode="wait" initial={false}>
         {collapsed ? (
@@ -86,16 +100,31 @@ export function Sidebar({
               <Plus size={18} strokeWidth={1.8} />
             </IconBtn>
 
+            <label
+              title="Upload files"
+              className="mt-1 rounded-md p-2 text-secondary transition-colors hover:bg-hover hover:text-primary cursor-pointer"
+            >
+              <Upload size={18} strokeWidth={1.8} />
+              <input
+                type="file"
+                multiple
+                accept=".pdf,.docx,.txt,.md"
+                className="hidden"
+                disabled={isIndexing}
+                onChange={(e) => { onUpload(Array.from(e.target.files ?? [])); e.target.value = ""; }}
+              />
+            </label>
+
             {/* One icon per document */}
             <div className="mt-4 flex min-h-0 flex-1 flex-col items-center gap-1.5 overflow-y-auto w-full px-3">
-              {documents.map((doc) => (
+              {orderedDocuments.map((doc) => (
                 <button
                   key={doc.id}
                   type="button"
                   title={doc.name}
-                  onClick={() => onSelectDocument(doc.id)}
+                  onClick={() => onToggleDocument(doc.id)}
                   className={`flex w-full items-center justify-center rounded-md p-2 transition-colors hover:bg-hover ${
-                    doc.id === selectedDocumentId ? "text-accent" : "text-secondary"
+                    selectedDocumentIds.includes(doc.id) ? "text-accent" : "text-secondary"
                   }`}
                 >
                   <FileText size={18} strokeWidth={1.55} />
@@ -103,10 +132,23 @@ export function Sidebar({
               ))}
             </div>
 
-            {/* Expand sidebar when clicking Settings or Help while collapsed */}
+            {/* Expand sidebar when clicking Settings, Models, or Help while collapsed */}
             <div className="mt-auto flex flex-col items-center gap-1 w-full px-3">
               <IconBtn title="Settings" onClick={() => setCollapsed(false)}>
                 <Settings size={17} strokeWidth={1.7} />
+              </IconBtn>
+              <IconBtn
+                title={ollama.health ? "Models — Ollama running" : "Models — Ollama not detected"}
+                onClick={() => setCollapsed(false)}
+              >
+                <span className="relative inline-flex">
+                  <Boxes size={17} strokeWidth={1.7} />
+                  <span
+                    className={`absolute -right-1 -top-1 h-1.5 w-1.5 rounded-full ${
+                      ollama.health ? "bg-[#4ADE80]" : "bg-[#fca5a5]"
+                    }`}
+                  />
+                </span>
               </IconBtn>
               <IconBtn title="Help" onClick={() => setCollapsed(false)}>
                 <CircleHelp size={17} strokeWidth={1.7} />
@@ -126,7 +168,7 @@ export function Sidebar({
           >
             {/* Header */}
             <div className="mb-8 flex items-center justify-between">
-              <Logo showWordmark />
+              <Logo showWordmark size={40} wordmarkClass="text-[22px]" />
               <button
                 type="button"
                 aria-label="Collapse sidebar"
@@ -178,12 +220,12 @@ export function Sidebar({
             {/* Document list */}
             <nav className="min-h-0 flex-1 space-y-1.5 overflow-y-auto">
               {documents.length ? (
-                documents.map((doc) => (
+                orderedDocuments.map((doc) => (
                   <DocumentRow
                     key={doc.id}
                     document={doc}
-                    selected={doc.id === selectedDocumentId}
-                    onSelect={() => onSelectDocument(doc.id)}
+                    selected={selectedDocumentIds.includes(doc.id)}
+                    onSelect={() => onToggleDocument(doc.id)}
                     onRemove={() => onRemoveDocument(doc.id)}
                   />
                 ))
@@ -268,6 +310,22 @@ export function Sidebar({
                 )}
               </AnimatePresence>
 
+              {/* Models panel */}
+              <AnimatePresence initial={false}>
+                {modelsOpen && (
+                  <motion.div
+                    key="models-panel"
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: "auto", opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.18, ease: "easeOut" }}
+                    className="overflow-hidden"
+                  >
+                    <ModelsPanel ollama={ollama} />
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
               {/* Help panel */}
               <AnimatePresence initial={false}>
                 {helpOpen && (
@@ -299,13 +357,40 @@ export function Sidebar({
                 icon={<Settings size={17} strokeWidth={1.7} />}
                 label="Settings"
                 active={settingsOpen}
-                onClick={() => { setSettingsOpen((v) => !v); setHelpOpen(false); }}
+                onClick={() => {
+                  setSettingsOpen((v) => !v);
+                  setHelpOpen(false);
+                  setModelsOpen(false);
+                }}
+              />
+              <SidebarAction
+                icon={
+                  <span className="relative inline-flex">
+                    <Boxes size={17} strokeWidth={1.7} />
+                    <span
+                      className={`absolute -right-1 -top-1 h-1.5 w-1.5 rounded-full ${
+                        ollama.health ? "bg-[#4ADE80]" : "bg-[#fca5a5]"
+                      }`}
+                    />
+                  </span>
+                }
+                label="Models"
+                active={modelsOpen}
+                onClick={() => {
+                  setModelsOpen((v) => !v);
+                  setSettingsOpen(false);
+                  setHelpOpen(false);
+                }}
               />
               <SidebarAction
                 icon={<CircleHelp size={17} strokeWidth={1.7} />}
                 label="Help"
                 active={helpOpen}
-                onClick={() => { setHelpOpen((v) => !v); setSettingsOpen(false); }}
+                onClick={() => {
+                  setHelpOpen((v) => !v);
+                  setSettingsOpen(false);
+                  setModelsOpen(false);
+                }}
               />
             </div>
           </motion.div>
@@ -330,8 +415,10 @@ function DocumentRow({
 }) {
   return (
     <div
-      className={`group relative flex min-h-[64px] w-full items-center gap-3 rounded-md px-3 transition-colors hover:bg-hover ${
-        selected ? "bg-elevated" : "bg-transparent"
+      className={`group relative flex min-h-[64px] w-full items-center gap-3 rounded-md border px-3 transition-colors hover:bg-hover ${
+        selected
+          ? "border-accent/35 bg-accent/10"
+          : "border-transparent bg-transparent"
       }`}
     >
       <button
@@ -344,8 +431,10 @@ function DocumentRow({
           strokeWidth={1.55}
           className={`shrink-0 ${selected ? "text-accent" : "text-primary"}`}
         />
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-[13px] font-medium text-primary">
+          <span className="min-w-0 flex-1">
+          <span className={`block truncate text-[13px] font-medium ${
+            selected ? "text-accent" : "text-primary"
+          }`}>
             {document.name}
           </span>
           <span className="mt-1 flex items-center gap-1.5 text-[12px] text-secondary">
@@ -426,6 +515,138 @@ function IconBtn({
     >
       {children}
     </button>
+  );
+}
+
+/* ── ModelsPanel ────────────────────────────────────── */
+
+function ModelsPanel({ ollama }: { ollama: ReturnType<typeof useOllamaStatus> }) {
+  const { health, error, loading, lastCheckedAt, refresh } = ollama;
+  const reachable = !!health;
+
+  // Fallback to the documented defaults when the backend can't be reached,
+  // so the user still sees the commands they need to run.
+  const chatModel      = health?.chat_model      ?? "qwen2.5:7b-instruct";
+  const embeddingModel = health?.embedding_model ?? "nomic-embed-text";
+
+  return (
+    <div className="mb-2 rounded-md border border-line bg-elevated/40 px-3 py-3 text-[12px] leading-[1.55] text-secondary">
+      <div className="flex items-center justify-between">
+        <p className="font-medium text-primary">Ollama</p>
+        <span
+          className={`inline-flex items-center gap-1.5 text-[11px] font-medium ${
+            reachable ? "text-[#4ADE80]" : "text-[#fca5a5]"
+          }`}
+        >
+          <span
+            className={`h-1.5 w-1.5 rounded-full ${
+              reachable ? "bg-[#4ADE80]" : "bg-[#fca5a5]"
+            }`}
+          />
+          {loading && !lastCheckedAt
+            ? "Checking…"
+            : reachable
+              ? "Running"
+              : "Not detected"}
+        </span>
+      </div>
+
+      {!reachable && (
+        <p className="mt-2 text-muted">
+          {error ?? "Start Ollama, then refresh."} Run{" "}
+          <code className="rounded bg-app/60 px-1 py-px text-[11px] text-primary">
+            ollama serve
+          </code>{" "}
+          in a terminal.
+        </p>
+      )}
+
+      <div className="mt-3 space-y-2">
+        <ModelRow kind="Chat" name={chatModel} ready={reachable} />
+        <ModelRow kind="Embedding" name={embeddingModel} ready={reachable} />
+      </div>
+
+      <p className="mt-3 text-muted">
+        Models are downloaded once with{" "}
+        <code className="rounded bg-app/60 px-1 py-px text-[11px] text-primary">
+          ollama pull
+        </code>
+        . Copy the command per model above.
+      </p>
+
+      <div className="mt-3 flex items-center justify-between gap-2">
+        <a
+          href="https://ollama.com/download"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1 text-accent transition-colors hover:text-accent-hover"
+        >
+          <ExternalLink size={11} strokeWidth={1.8} />
+          Install Ollama
+        </a>
+        <button
+          type="button"
+          onClick={refresh}
+          className="inline-flex items-center gap-1 text-secondary underline-offset-2 transition-colors hover:text-primary"
+          title="Re-check status"
+        >
+          <RefreshCw size={11} strokeWidth={1.8} />
+          Refresh
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ModelRow({
+  kind,
+  name,
+  ready,
+}: {
+  kind: "Chat" | "Embedding";
+  name: string;
+  ready: boolean;
+}) {
+  const [copied, setCopied] = useState(false);
+  const command = `ollama pull ${name}`;
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(command);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {}
+  };
+
+  return (
+    <div className="rounded-md border border-line/70 bg-app/40 px-2.5 py-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] font-medium uppercase tracking-[0.06em] text-muted">
+          {kind}
+        </span>
+        <span
+          className={`inline-flex h-1.5 w-1.5 rounded-full ${
+            ready ? "bg-[#4ADE80]" : "bg-[#fca5a5]"
+          }`}
+          title={ready ? "Available" : "Unknown — Ollama not reachable"}
+        />
+      </div>
+      <div className="mt-1.5 flex items-center justify-between gap-2">
+        <code className="min-w-0 flex-1 truncate text-[12px] text-primary" title={name}>
+          {name}
+        </code>
+        <button
+          type="button"
+          onClick={handleCopy}
+          title={copied ? "Copied!" : `Copy: ${command}`}
+          className="shrink-0 rounded p-1 text-secondary transition-colors hover:bg-hover hover:text-primary"
+        >
+          {copied
+            ? <Check size={12} className="text-accent" />
+            : <Copy size={12} />}
+        </button>
+      </div>
+    </div>
   );
 }
 

@@ -49,8 +49,7 @@ export const api = {
     question: string,
     answerMode: AnswerMode,
     chatHistory: Array<{ role: string; content: string }>,
-    scope: "all" | "selected" = "all",
-    documentId: string | null = null
+    documentIds: string[] = [],
   ): Promise<ChatResponse> {
     return request("/api/chat", {
       method: "POST",
@@ -59,13 +58,92 @@ export const api = {
         question,
         answer_mode: answerMode,
         chat_history: chatHistory,
-        scope,
-        document_id: documentId,
+        document_ids: documentIds,
       }),
     });
+  },
+
+  async chatStream(
+    question: string,
+    answerMode: AnswerMode,
+    chatHistory: Array<{ role: string; content: string }>,
+    documentIds: string[],
+    callbacks: ChatStreamCallbacks,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const res = await fetch(`${BASE}/api/chat/stream`, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({
+        question,
+        answer_mode:   answerMode,
+        chat_history:  chatHistory,
+        document_ids:  documentIds,
+      }),
+      signal,
+    });
+    if (!res.ok || !res.body) {
+      let detail = `Stream failed: ${res.status} ${res.statusText}`;
+      try {
+        const body = await res.json();
+        if (body?.detail) detail = body.detail;
+      } catch {}
+      throw new Error(detail);
+    }
+
+    const reader  = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer    = "";
+
+    const dispatch = (line: string) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      let event: StreamEvent;
+      try {
+        event = JSON.parse(trimmed);
+      } catch {
+        return; // skip malformed lines
+      }
+      switch (event.type) {
+        case "metadata": callbacks.onMetadata?.(event.data); break;
+        case "token":    callbacks.onToken?.(event.text);    break;
+        case "done":     callbacks.onDone?.();               break;
+        case "error":    throw new Error(event.message);
+      }
+    };
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let nlIndex: number;
+      while ((nlIndex = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, nlIndex);
+        buffer     = buffer.slice(nlIndex + 1);
+        dispatch(line);
+      }
+    }
+    if (buffer.length > 0) dispatch(buffer);
   },
 
   summary(): Promise<SummaryResponse> {
     return request("/api/summary", { method: "POST" });
   },
+};
+
+/* ── Streaming types ──────────────────────────────────── */
+
+export type StreamMetadata = Omit<ChatResponse, "answer">;
+
+type StreamEvent =
+  | { type: "metadata"; data: StreamMetadata }
+  | { type: "token";    text: string }
+  | { type: "done" }
+  | { type: "error";    message: string };
+
+export type ChatStreamCallbacks = {
+  onMetadata?: (meta: StreamMetadata) => void;
+  onToken?:    (token: string)        => void;
+  onDone?:     ()                     => void;
 };

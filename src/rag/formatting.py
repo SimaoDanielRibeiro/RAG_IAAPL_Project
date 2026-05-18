@@ -108,8 +108,11 @@ def has_weak_evidence(
       below `weak_evidence_average_threshold`.
 
     For relative-scale (CrossEncoder) scores the only check is the chunk
-    count, because a CrossEncoder always produces a top score regardless of
-    absolute relevance.
+    count. CrossEncoder raw logits cannot reliably distinguish off-topic
+    questions from valid meta-questions ("what is this about?",
+    "summarize this") — both score in the -10 logit range against MS-MARCO
+    cross-encoders. The hallucination-on-off-topic trade-off is accepted
+    here so legitimate meta-questions continue to work.
     """
     if len(documents) < config.minimum_supporting_chunks:
         return True

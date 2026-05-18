@@ -11,7 +11,7 @@ Always mention page numbers and source file names when possible.
 """.strip()
 
 
-_CITATION_RULE = (
+_CITATION_FORMAT_RULE = (
     "CITATION FORMAT (CRITICAL): cite every claim using square brackets in EXACTLY "
     "this format: [filename, p.N] — for example [report.pdf, p.3]. Use this exact "
     "format inside bullet points and lists too. If no page is known: [report.pdf]. "
@@ -46,20 +46,63 @@ _NO_SOURCE_NARRATION_RULE = (
 )
 
 
-ANSWER_PROMPT_TEMPLATE = f"""
+_STANDARD_CITATION_RULE = (
+    'Do NOT add any inline citations in the answer text. No "[filename, p.N]", '
+    'no "(filename)", no parenthetical sources. The user already sees the '
+    "supporting sources separately in the Evidence panel."
+)
+
+_EXHAUSTIVE_CITATION_RULE = (
+    _CITATION_FORMAT_RULE
+    + " CITATION PLACEMENT: every paragraph MUST contain at least one inline "
+    "citation in the [filename, p.N] format. Place the citation at the very END "
+    "of the paragraph it supports — never inside a sentence and never narrated "
+    "as part of the prose. If a paragraph combines facts from two or more "
+    "sources, put ALL the citations together at the end of that paragraph. "
+    "A paragraph with no citation is not acceptable."
+)
+
+
+_STANDARD_LENGTH_RULE = (
+    "Keep the answer direct and concise — typically 2 to 4 sentences in plain "
+    "prose. Synthesize the relevant facts smoothly."
+)
+
+_EXHAUSTIVE_LENGTH_RULE = (
+    "Give a thorough, complete answer that extracts as much relevant information "
+    "from the context as possible. Structure the answer as multiple plain "
+    "paragraphs separated by blank lines. Each paragraph develops one aspect of "
+    "the answer. Do NOT use markdown section headers — start each new aspect "
+    "with a normal sentence. Use plain hyphen bullets (- item) only when the "
+    'question explicitly asks for an enumerated list (e.g. "list all items", '
+    '"what are the steps"). When using bullets, place the citation at the end '
+    "of each bullet."
+)
+
+
+_PARTIAL_ANSWER_RULE = (
+    "If part of the requested information is missing from the context, mention "
+    "what is missing in your own words in a short final paragraph. Do NOT use "
+    'the exact phrase "I could not find that information in the uploaded '
+    'document" as a closing disclaimer when the answer above already contains '
+    "real content."
+)
+
+
+_BASE_ANSWER_PROMPT_TEMPLATE = """
 Context:
-{{context}}
+{context}
 
 Question:
-{{question}}
+{question}
 
 Instructions:
 - Use the context to answer the question. Extract whatever is relevant; do not refuse just because the wording differs from the question.
-- Do NOT add any inline citations in the answer text. No "[filename, p.N]", no "(filename)", no parenthetical sources. The user already sees the supporting sources separately in the Evidence panel.
-- {_FORMAT_RULE}
-- {_NO_SOURCE_NARRATION_RULE}
-- Keep the answer direct and concise — typically 2 to 4 sentences in plain prose. Synthesize the relevant facts smoothly.
-- If only part of the answer is present, give that part and briefly mention what is missing in your own words. Do NOT use the exact phrase "I could not find that information in the uploaded document" as a closing disclaimer when the rest of the answer has real content.
+- __CITATION_RULE__
+- __FORMAT_RULE__
+- __NO_SOURCE_NARRATION_RULE__
+- __LENGTH_RULE__
+- __PARTIAL_ANSWER_RULE__
 - Do not invent facts or use outside knowledge.
 - ONLY when the context contains nothing related to the question at all, respond with EXACTLY this single sentence and nothing else:
   I could not find that information in the uploaded document.
@@ -67,27 +110,43 @@ Instructions:
 """.strip()
 
 
-EXHAUSTIVE_ANSWER_PROMPT_TEMPLATE = f"""
-Context:
-{{context}}
+def _build_answer_prompt(citation_rule: str, length_rule: str) -> str:
+    """Inject the mode-specific citation and length rules into the shared base."""
+    return (
+        _BASE_ANSWER_PROMPT_TEMPLATE
+        .replace("__CITATION_RULE__", citation_rule)
+        .replace("__FORMAT_RULE__", _FORMAT_RULE)
+        .replace("__NO_SOURCE_NARRATION_RULE__", _NO_SOURCE_NARRATION_RULE)
+        .replace("__LENGTH_RULE__", length_rule)
+        .replace("__PARTIAL_ANSWER_RULE__", _PARTIAL_ANSWER_RULE)
+    )
 
-Question:
-{{question}}
 
-Instructions:
-- Give a thorough, complete answer that extracts as much relevant information from the context as possible.
-- {_CITATION_RULE}
-- CITATION PLACEMENT: every paragraph MUST contain at least one inline citation in the [filename, p.N] format. Place the citation at the very END of the paragraph it supports — never inside a sentence and never narrated as part of the prose. If a paragraph combines facts from two or more sources, put ALL the citations together at the end of that paragraph. A paragraph with no citation is not acceptable.
-- {_FORMAT_RULE}
-- {_NO_SOURCE_NARRATION_RULE}
-- Structure the answer as multiple plain paragraphs separated by blank lines. Each paragraph develops one aspect of the answer. Do NOT use markdown section headers — start each new aspect with a normal sentence.
-- Use plain hyphen bullets (- item) only when the question explicitly asks for an enumerated list (e.g. "list all items", "what are the steps"). When using bullets, place the citation at the end of each bullet.
-- If part of the requested information is missing from the context, mention what is missing in your own words in a short final paragraph. Do NOT use the exact phrase "I could not find that information in the uploaded document" as a closing disclaimer when the answer above already contains real content.
-- Do not invent facts or use outside knowledge.
-- ONLY when the context contains nothing related to the question at all, respond with EXACTLY this single sentence and nothing else:
-  I could not find that information in the uploaded document.
-  Never append that sentence after a paragraph that already answered (even partially).
-""".strip()
+ANSWER_PROMPT_TEMPLATE = _build_answer_prompt(
+    _STANDARD_CITATION_RULE, _STANDARD_LENGTH_RULE
+)
+
+EXHAUSTIVE_ANSWER_PROMPT_TEMPLATE = _build_answer_prompt(
+    _EXHAUSTIVE_CITATION_RULE, _EXHAUSTIVE_LENGTH_RULE
+)
+
+
+STANDARD_RERANK_CRITERIA = (
+    "Score for PRECISION. Prefer chunks that directly and concisely answer the "
+    "question. A 10 chunk contains the exact answer; a 7 chunk contains most of "
+    "it; a 5 chunk is on-topic but does not actually answer; a 1 chunk is "
+    "off-topic. Penalize chunks that only mention the topic in passing."
+)
+
+EXHAUSTIVE_RERANK_CRITERIA = (
+    "Score for BREADTH and CITABILITY. Prefer chunks that cover any aspect of "
+    "the topic and that contain concrete, citable facts (numbers, names, "
+    "definitions, claims that can be quoted). A 10 chunk adds a distinct, "
+    "citable piece of evidence; a 7 chunk adds partial new evidence; a 5 chunk "
+    "is topical but largely repeats what other chunks already say; a 1 chunk is "
+    "off-topic. A chunk that is on-topic but redundant should score lower than "
+    "one that adds a new citable fact."
+)
 
 
 RERANK_PROMPT_TEMPLATE = """
@@ -98,6 +157,9 @@ Question:
 
 Chunk:
 {chunk}
+
+Scoring criteria:
+{criteria}
 
 Give only a relevance score from 1 to 10.
 """.strip()

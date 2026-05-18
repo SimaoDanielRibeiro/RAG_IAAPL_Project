@@ -30,6 +30,10 @@ class RAGConfig:
     vector_fetch_multiplier: int = 3
     mmr_lambda: float = 0.7
 
+    # Reciprocal Rank Fusion for hybrid retrieval
+    rrf_k: int = 60
+    rrf_pool_multiplier: int = 4
+
     # Final selection
     standard_final_chunks: int = 6
     exhaustive_final_chunks: int = 10

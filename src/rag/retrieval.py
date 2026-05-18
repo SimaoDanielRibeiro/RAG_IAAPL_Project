@@ -39,7 +39,7 @@ class HybridRetriever:
 
     BM25 is built lazily per collection and cached. The cache key is derived
     from a stable Chroma attribute (collection name) rather than `id(...)`
-    so it survives Streamlit's pipeline-level reruns.
+    so it survives backend hot reloads and pipeline re-instantiations.
     """
 
     def __init__(self, config: RAGConfig, logger: logging.Logger) -> None:
@@ -57,10 +57,21 @@ class HybridRetriever:
         top_k: int,
         source_filter: str | None = None,
     ) -> list[Document]:
-        """Combine semantic MMR retrieval with BM25 keyword retrieval."""
-        vector_documents = self.retrieve_vector(vectorstore, queries, top_k=top_k, source_filter=source_filter)
-        keyword_documents = self.retrieve_keyword(vectorstore, queries, top_k=top_k, source_filter=source_filter)
-        return vector_documents + keyword_documents
+        """Combine semantic MMR retrieval with BM25 keyword retrieval via RRF.
+
+        Each query produces one ranked vector list and one ranked keyword list.
+        All ranked lists are fused with Reciprocal Rank Fusion, which rewards
+        chunks that surface near the top across multiple lists (especially
+        across both retrieval methods). The fused, deduplicated pool is then
+        passed to neighbor expansion and the reranker downstream.
+        """
+        vector_lists = self._retrieve_vector_per_query(
+            vectorstore, queries, top_k=top_k, source_filter=source_filter
+        )
+        keyword_lists = self._retrieve_keyword_per_query(
+            vectorstore, queries, top_k=top_k, source_filter=source_filter
+        )
+        return self._fuse_rrf(vector_lists, keyword_lists, top_k=top_k)
 
     def retrieve_diverse(
         self,
@@ -69,21 +80,26 @@ class HybridRetriever:
         top_k: int,
         source_names: list[str],
     ) -> list[Document]:
-        """Per-source retrieval followed by global merge for better multi-file coverage.
+        """Per-source RRF-fused retrieval, then merged across sources.
 
         Retrieves candidates from each source independently so no single large
-        document crowds out smaller ones. The caller deduplicates and reranks
-        the merged pool globally.
+        document crowds out smaller ones, and fuses each source's vector and
+        keyword lists with RRF before merging. The caller deduplicates and
+        reranks the merged pool globally.
         """
         if not source_names:
             return self.retrieve(vectorstore, queries, top_k=top_k)
         per_source_k = max(3, (top_k // len(source_names)) + 1)
         all_docs: list[Document] = []
         for source in source_names:
-            vec_docs = self.retrieve_vector(vectorstore, queries, top_k=per_source_k, source_filter=source)
-            kw_docs = self.retrieve_keyword(vectorstore, queries, top_k=per_source_k, source_filter=source)
-            all_docs.extend(vec_docs)
-            all_docs.extend(kw_docs)
+            vector_lists = self._retrieve_vector_per_query(
+                vectorstore, queries, top_k=per_source_k, source_filter=source
+            )
+            keyword_lists = self._retrieve_keyword_per_query(
+                vectorstore, queries, top_k=per_source_k, source_filter=source
+            )
+            fused = self._fuse_rrf(vector_lists, keyword_lists, top_k=per_source_k)
+            all_docs.extend(fused)
         return all_docs
 
     def retrieve_vector(
@@ -93,13 +109,42 @@ class HybridRetriever:
         top_k: int,
         source_filter: str | None = None,
     ) -> list[Document]:
-        """Run MMR vector retrieval for each query variant."""
-        retrieved_documents: list[Document] = []
+        """Run MMR vector retrieval for each query variant (flattened)."""
+        per_query = self._retrieve_vector_per_query(
+            vectorstore, queries, top_k=top_k, source_filter=source_filter
+        )
+        return [document for ranked in per_query for document in ranked]
+
+    def retrieve_keyword(
+        self,
+        vectorstore: Chroma,
+        queries: list[str],
+        top_k: int,
+        source_filter: str | None = None,
+    ) -> list[Document]:
+        """Run BM25 keyword retrieval for each query variant (flattened)."""
+        per_query = self._retrieve_keyword_per_query(
+            vectorstore, queries, top_k=top_k, source_filter=source_filter
+        )
+        return [document for ranked in per_query for document in ranked]
+
+    # ------------------------------------------------------------------
+    # Per-query ranked retrieval (used by RRF fusion)
+    # ------------------------------------------------------------------
+    def _retrieve_vector_per_query(
+        self,
+        vectorstore: Chroma,
+        queries: list[str],
+        top_k: int,
+        source_filter: str | None = None,
+    ) -> list[list[Document]]:
+        """Return one MMR-ranked list per query (preserves rank order)."""
         fetch_k = max(
             top_k * self.config.vector_fetch_multiplier,
             self.config.vector_fetch_k_minimum,
         )
         chroma_filter = {"source": source_filter} if source_filter else None
+        ranked_lists: list[list[Document]] = []
         for query in queries:
             try:
                 kwargs: dict = dict(
@@ -115,63 +160,131 @@ class HybridRetriever:
                 self.logger.warning(
                     "Vector retrieval failed for query '%s'. Error: %s", query, error
                 )
+                ranked_lists.append([])
                 continue
-            for document in results:
-                retrieved_documents.append(self._tag_method(document, "vector"))
-        return retrieved_documents
+            ranked_lists.append([self._tag_method(document, "vector") for document in results])
+        return ranked_lists
 
-    def retrieve_keyword(
+    def _retrieve_keyword_per_query(
         self,
         vectorstore: Chroma,
         queries: list[str],
         top_k: int,
         source_filter: str | None = None,
-    ) -> list[Document]:
-        """Run BM25 keyword retrieval over chunks already stored in Chroma."""
+    ) -> list[list[Document]]:
+        """Return one BM25-ranked list per query (preserves rank order)."""
         if BM25Okapi is None:
             self.logger.info(
                 "rank-bm25 is not installed; skipping keyword retrieval. "
                 "Install it to enable hybrid search."
             )
-            return []
+            return [[] for _ in queries]
 
         entry = self._get_bm25_entry(vectorstore)
         if entry is None:
-            return []
+            return [[] for _ in queries]
 
         # When filtering by source, build an on-the-fly subset index.
         if source_filter:
             docs = [d for d in entry.documents if d.metadata.get("source") == source_filter]
             if not docs:
-                return []
+                return [[] for _ in queries]
             tokenized_corpus = [self._tokenize(d.page_content) for d in docs]
             bm25 = BM25Okapi(tokenized_corpus)
         else:
             docs = entry.documents
             bm25 = entry.bm25
 
-        retrieved_documents: list[Document] = []
+        ranked_lists: list[list[Document]] = []
         for query in queries:
             query_tokens = self._tokenize(query)
             if not query_tokens:
+                ranked_lists.append([])
                 continue
 
             scores = bm25.get_scores(query_tokens)
             if not len(scores):
+                ranked_lists.append([])
                 continue
 
             ranked_indexes = sorted(
                 range(len(scores)), key=lambda index: scores[index], reverse=True
             )[:top_k]
 
+            ranked: list[Document] = []
             for index in ranked_indexes:
                 if scores[index] <= 0:
                     continue
                 document = docs[index]
                 tagged = self._tag_method(document, "keyword")
                 tagged.metadata["bm25_score"] = round(float(scores[index]), 4)
-                retrieved_documents.append(tagged)
-        return retrieved_documents
+                ranked.append(tagged)
+            ranked_lists.append(ranked)
+        return ranked_lists
+
+    # ------------------------------------------------------------------
+    # Reciprocal Rank Fusion
+    # ------------------------------------------------------------------
+    def _fuse_rrf(
+        self,
+        vector_lists: list[list[Document]],
+        keyword_lists: list[list[Document]],
+        top_k: int,
+    ) -> list[Document]:
+        """Fuse ranked lists with Reciprocal Rank Fusion.
+
+        For each ranked list, every document at rank `r` (1-indexed) contributes
+        `1 / (k + r)` to its fused score. Documents appearing across multiple
+        lists — and especially across both retrieval methods — accumulate the
+        highest scores, surfacing chunks that are robust under both semantic
+        and lexical signals.
+
+        Tagging:
+        - retrieval_method = "hybrid" when a doc was returned by both vector
+          and keyword retrievers, otherwise its single method's tag.
+        - rrf_score is stored on metadata for downstream inspection.
+
+        The returned pool is capped at `top_k * config.rrf_pool_multiplier`
+        so the reranker still sees a reasonably sized candidate set.
+        """
+        rrf_k = self.config.rrf_k
+        # key -> (best_seen_document, accumulated_score, methods_set, page_priority)
+        scores: dict[tuple[Any, Any], float] = {}
+        best_doc: dict[tuple[Any, Any], Document] = {}
+        methods: dict[tuple[Any, Any], set[str]] = {}
+
+        def _accumulate(ranked_list: list[Document], method: str) -> None:
+            for rank, document in enumerate(ranked_list, start=1):
+                key = (
+                    document.metadata.get("source"),
+                    document.metadata.get("chunk_index"),
+                )
+                scores[key] = scores.get(key, 0.0) + 1.0 / (rrf_k + rank)
+                methods.setdefault(key, set()).add(method)
+                # Keep the first-seen document instance as the canonical copy.
+                best_doc.setdefault(key, document)
+
+        for ranked in vector_lists:
+            _accumulate(ranked, "vector")
+        for ranked in keyword_lists:
+            _accumulate(ranked, "keyword")
+
+        if not scores:
+            return []
+
+        ranked_keys = sorted(scores.keys(), key=lambda k: scores[k], reverse=True)
+        pool_size = max(top_k, top_k * self.config.rrf_pool_multiplier)
+
+        fused: list[Document] = []
+        for key in ranked_keys[:pool_size]:
+            source_doc = best_doc[key]
+            method_set = methods[key]
+            final_method = "hybrid" if len(method_set) > 1 else next(iter(method_set))
+            metadata = dict(source_doc.metadata)
+            metadata["retrieval_method"] = final_method
+            metadata["rrf_score"] = round(scores[key], 6)
+            fused.append(Document(page_content=source_doc.page_content, metadata=metadata))
+        return fused
 
     def expand_neighbor_chunks(
         self, vectorstore: Chroma, documents: list[Document]
@@ -285,8 +398,8 @@ class HybridRetriever:
         """Use the collection name when available; fall back to object identity.
 
         ``Chroma._collection_name`` is the public name passed at construction.
-        We avoid `id(vectorstore)` because Streamlit can recreate the wrapper
-        across reruns, defeating the cache.
+        We avoid `id(vectorstore)` because the wrapper can be recreated when
+        the backend reloads, which would otherwise defeat the cache.
         """
         name = getattr(vectorstore, "_collection_name", None) or getattr(
             vectorstore, "collection_name", None

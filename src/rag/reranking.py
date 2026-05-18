@@ -11,7 +11,11 @@ from langchain_core.documents import Document
 from langchain_ollama import ChatOllama
 
 from src.rag.config import RAGConfig
-from src.rag.prompts import RERANK_PROMPT_TEMPLATE
+from src.rag.prompts import (
+    EXHAUSTIVE_RERANK_CRITERIA,
+    RERANK_PROMPT_TEMPLATE,
+    STANDARD_RERANK_CRITERIA,
+)
 from src.rag.retrieval import sort_by_document_order
 
 
@@ -40,14 +44,24 @@ class DocumentReranker:
         self._reranker: Any | None = None
         self._load_attempted = False
 
-    def rerank(self, question: str, documents: list[Document]) -> list[Document]:
-        """Score retrieved chunks and store scores in metadata."""
+    def rerank(
+        self,
+        question: str,
+        documents: list[Document],
+        answer_mode: str = "standard",
+    ) -> list[Document]:
+        """Score retrieved chunks and store scores in metadata.
+
+        `answer_mode` only affects the LLM-fallback path: standard mode rewards
+        precision, exhaustive mode rewards breadth and citability. The
+        CrossEncoder path is mode-blind because the model has no rubric input.
+        """
         if not documents:
             return []
 
         reranker = self._get_reranker()
         if reranker is None:
-            return self._rerank_with_llm(question, documents)
+            return self._rerank_with_llm(question, documents, answer_mode=answer_mode)
 
         try:
             pairs = [(question, document.page_content) for document in documents]
@@ -56,7 +70,7 @@ class DocumentReranker:
             self.logger.warning(
                 "Dedicated reranker failed; falling back to LLM scoring. Error: %s", error
             )
-            return self._rerank_with_llm(question, documents)
+            return self._rerank_with_llm(question, documents, answer_mode=answer_mode)
 
         normalized_scores = self._normalize_scores(raw_scores)
         reranked_documents: list[Document] = []
@@ -77,7 +91,11 @@ class DocumentReranker:
         """Keep the strongest chunks and order them for context building.
 
         For absolute-scale (LLM) scores, drop chunks below `rerank_keep_threshold`.
-        For relative-scale (CrossEncoder) scores, just keep top-N by score.
+        For relative-scale (CrossEncoder) scores, just keep top-N by score —
+        the answerability check happens in `has_weak_evidence`, which uses
+        the raw CrossEncoder logit as an absolute relevance floor. Restricting
+        the LLM's context here based on raw scores would hurt paraphrase
+        answers that score marginally negative but are still useful.
         """
         if not documents:
             return []
@@ -142,11 +160,21 @@ class DocumentReranker:
     # ------------------------------------------------------------------
     # LLM fallback path
     # ------------------------------------------------------------------
-    def _rerank_with_llm(self, question: str, documents: list[Document]) -> list[Document]:
+    def _rerank_with_llm(
+        self,
+        question: str,
+        documents: list[Document],
+        answer_mode: str = "standard",
+    ) -> list[Document]:
         """Score each chunk by asking the chat model for a 1-10 relevance value."""
+        criteria = (
+            EXHAUSTIVE_RERANK_CRITERIA
+            if answer_mode == "exhaustive"
+            else STANDARD_RERANK_CRITERIA
+        )
         reranked_documents: list[Document] = []
         for document in documents:
-            score = self._score_with_llm(question, document.page_content)
+            score = self._score_with_llm(question, document.page_content, criteria)
             metadata = dict(document.metadata)
             metadata["rerank_score"] = score
             metadata["rerank_score_scale"] = "absolute"
@@ -156,9 +184,11 @@ class DocumentReranker:
             )
         return reranked_documents
 
-    def _score_with_llm(self, question: str, chunk: str) -> int:
+    def _score_with_llm(self, question: str, chunk: str, criteria: str) -> int:
         """Ask the model to produce a 1-10 relevance score for a chunk."""
-        prompt = RERANK_PROMPT_TEMPLATE.format(question=question, chunk=chunk)
+        prompt = RERANK_PROMPT_TEMPLATE.format(
+            question=question, chunk=chunk, criteria=criteria
+        )
         try:
             response = self.chat_model.invoke(prompt)
         except Exception as error:

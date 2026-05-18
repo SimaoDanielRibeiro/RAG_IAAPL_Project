@@ -36,3 +36,6 @@ Thumbs.db
 frontend/.next/
 frontend/node_modules/
 frontend/.env.local
+
+# Eval harness run output (keep fixtures + golden files in git)
+eval/results/

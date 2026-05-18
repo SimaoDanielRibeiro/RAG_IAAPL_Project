@@ -31,12 +31,12 @@ from src.utils import ensure_directory
 
 
 class DocumentRAGPipeline:
-    """Public pipeline API used by the Streamlit UI.
+    """Public RAG pipeline API consumed by the FastAPI backend.
 
     The orchestrator stays intentionally thin: specialized components handle
     storage, chunking, vector-store reuse, retrieval, reranking, and
     generation. This class only wires them together and shapes the response
-    payload returned to the UI.
+    payload returned to the API layer.
 
     Public methods (stable):
     - `save_uploaded_documents(files)`
@@ -204,11 +204,12 @@ class DocumentRAGPipeline:
             source_names=source_names or [],
         )
         generated_queries = retrieval_result["generated_queries"]
-        final_docs = retrieval_result["final_documents"]
-        context = build_context(final_docs)
-        average_score = average_rerank_score(final_docs)
+        selected_docs = retrieval_result["selected_documents"]
+        context_docs = retrieval_result["final_documents"]
+        context = build_context(context_docs)
+        average_score = average_rerank_score(selected_docs)
 
-        if not context.strip() or has_weak_evidence(final_docs, average_score, self.config):
+        if not context.strip() or has_weak_evidence(selected_docs, average_score, self.config):
             payload = self._build_fallback_response(
                 generated_queries, standalone_question, answer_mode
             )
@@ -218,15 +219,15 @@ class DocumentRAGPipeline:
             return payload
 
         return {
-            "documents": final_docs,
+            "documents": selected_docs,
             "context": context,
             "confidence": confidence_label(average_score, self.config),
-            "pages": extract_page_numbers(final_docs),
-            "sources": extract_source_names(final_docs),
-            "chunks_used": len(final_docs),
+            "pages": extract_page_numbers(selected_docs),
+            "sources": extract_source_names(selected_docs),
+            "chunks_used": len(selected_docs),
             "average_score": average_score,
             "queries": generated_queries,
-            "citations": format_citations(final_docs),
+            "citations": format_citations(selected_docs),
             "retrieval_question": standalone_question,
             "answer_mode": answer_mode,
             "fallback": False,
@@ -268,7 +269,19 @@ class DocumentRAGPipeline:
         source_filter: str | None = None,
         source_names: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Run query expansion, hybrid retrieval, neighbor expansion, and reranking."""
+        """Run query expansion, hybrid retrieval, reranking, and neighbor expansion.
+
+        Order is: retrieve → rerank → select → expand_neighbors. Neighbor
+        expansion runs AFTER selection so the reranker scores only what was
+        actually retrieved (un-diluted by adjacent-but-off-topic chunks). The
+        survivors then get neighbor context for the LLM prompt.
+
+        Two distinct document sets are returned:
+        - `selected_documents`: rerank survivors (no neighbors). Used for
+          evidence checks, citations, sources, pages.
+        - `final_documents`: selected + their neighbors. Used to build the
+          LLM context so the model sees fuller passages around each hit.
+        """
         retrieval_top_k = (
             self.config.exhaustive_top_k if answer_mode == "exhaustive" else top_k
         )
@@ -283,17 +296,20 @@ class DocumentRAGPipeline:
                 vectorstore, generated_queries, top_k=retrieval_top_k, source_filter=source_filter
             )
         unique = deduplicate_documents(retrieved)
-        expanded = self.retriever.expand_neighbor_chunks(vectorstore, unique)
-        reranked = self.reranker.rerank(standalone_question, expanded)
-        final = self.reranker.select_final_documents(reranked, answer_mode=answer_mode)
+        reranked = self.reranker.rerank(
+            standalone_question, unique, answer_mode=answer_mode
+        )
+        selected = self.reranker.select_final_documents(reranked, answer_mode=answer_mode)
+        expanded = self.retriever.expand_neighbor_chunks(vectorstore, selected)
 
         return {
             "generated_queries": generated_queries,
             "retrieved_documents": retrieved,
             "unique_documents": unique,
-            "expanded_documents": expanded,
             "reranked_documents": reranked,
-            "final_documents": final,
+            "selected_documents": selected,
+            "expanded_documents": expanded,
+            "final_documents": expanded,
         }
 
     def _summarize_single_source(

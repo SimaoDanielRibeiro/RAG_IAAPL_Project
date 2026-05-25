@@ -11,6 +11,7 @@ from langchain_chroma import Chroma
 from langchain_core.documents import Document
 
 from src.rag.config import RAGConfig
+from src.rag.formatting import is_low_value_evidence_text
 
 try:
     from rank_bm25 import BM25Okapi
@@ -19,6 +20,50 @@ except ImportError:
 
 
 _NEIGHBOR_NONE_SENTINEL = -1
+_QUERY_STOP_WORDS = {
+    "about",
+    "also",
+    "and",
+    "answer",
+    "apply",
+    "applied",
+    "applies",
+    "are",
+    "can",
+    "context",
+    "could",
+    "document",
+    "does",
+    "file",
+    "for",
+    "from",
+    "give",
+    "how",
+    "into",
+    "main",
+    "pdf",
+    "question",
+    "relatorio",
+    "report",
+    "role",
+    "roles",
+    "resume",
+    "resumo",
+    "summary",
+    "tell",
+    "that",
+    "the",
+    "this",
+    "used",
+    "utilized",
+    "what",
+    "when",
+    "where",
+    "which",
+    "within",
+    "why",
+    "with",
+}
 
 
 @dataclass
@@ -127,6 +172,95 @@ class HybridRetriever:
             vectorstore, queries, top_k=top_k, source_filter=source_filter
         )
         return [document for ranked in per_query for document in ranked]
+
+    def retrieve_exact_matches(
+        self,
+        vectorstore: Chroma,
+        queries: list[str],
+        top_k: int,
+        source_filter: str | None = None,
+        source_names: list[str] | None = None,
+    ) -> list[Document]:
+        """Return content chunks that directly contain important query terms.
+
+        Hybrid semantic search can miss the most useful explanatory section
+        when a term appears many times across a long document. Exhaustive mode
+        benefits from an explicit lexical safety net: if the user asks about
+        "Django", the chunks headed "Django" should be available to the model.
+        """
+        query_terms = self._query_terms(" ".join(queries))
+        if not query_terms:
+            return []
+
+        allowed_sources = set(source_names or [])
+        documents = self.get_all_indexed_documents(vectorstore)
+        scored: list[tuple[float, int, int, Document]] = []
+        for document in documents:
+            source = document.metadata.get("source")
+            if source_filter and source != source_filter:
+                continue
+            if allowed_sources and source not in allowed_sources:
+                continue
+            if is_low_value_evidence_text(document.page_content):
+                continue
+
+            section_title = str(document.metadata.get("section_title", ""))
+            searchable = f"{section_title} {document.page_content}"
+            document_tokens = set(self._tokenize(searchable))
+            matched_terms = query_terms & document_tokens
+            if not matched_terms:
+                continue
+
+            lower_searchable = searchable.lower()
+            lower_title = section_title.lower()
+            title_matches = sum(1 for term in matched_terms if term in lower_title)
+            term_mentions = sum(lower_searchable.count(term) for term in matched_terms)
+            score = (
+                len(matched_terms) * 8.0
+                + title_matches * 10.0
+                + min(term_mentions, 8) * 1.5
+            )
+            if lower_searchable.strip().startswith("#"):
+                score += 2.0
+            # Penalize bullet-list headers and titles that look like code-file
+            # references (e.g. "views.py", "main.js"). These are usually layout
+            # artefacts rather than explanatory prose.
+            if (
+                lower_title.strip().startswith("•")
+                or re.search(
+                    r"\.(py|js|jsx|ts|tsx|html|css|java|cpp|c|go|rs|rb|php)\b",
+                    lower_title,
+                )
+            ):
+                score -= 14.0
+            # Heavy table content (many pipe characters) rarely makes good prose
+            # evidence even when it matches lexically.
+            if "|" in document.page_content and document.page_content.count("|") > 20:
+                score -= 6.0
+            # Source-code chunks contaminate exact-match retrieval; their term
+            # mentions come from identifiers, not from explanatory text.
+            if re.search(
+                r"\b(def|import|function|const|let|var|return|class|public|private)\b",
+                lower_searchable,
+            ):
+                score -= 20.0
+
+            metadata = dict(document.metadata)
+            metadata["retrieval_method"] = "exact"
+            metadata["exact_match_terms"] = sorted(matched_terms)
+            metadata["exact_match_score"] = round(score, 3)
+            tagged = Document(page_content=document.page_content, metadata=metadata)
+            scored.append(
+                (
+                    score,
+                    int(document.metadata.get("page", 10**9)),
+                    int(document.metadata.get("chunk_index", 10**9)),
+                    tagged,
+                )
+            )
+
+        scored.sort(key=lambda item: (-item[0], item[1], item[2]))
+        return [document for _, _, _, document in scored[:top_k]]
 
     # ------------------------------------------------------------------
     # Per-query ranked retrieval (used by RRF fusion)
@@ -412,6 +546,15 @@ class HybridRetriever:
     def _tokenize(text: str) -> list[str]:
         """Normalize text into simple alphanumeric tokens for BM25."""
         return re.findall(r"\b\w+\b", text.lower())
+
+    @staticmethod
+    def _query_terms(text: str) -> set[str]:
+        """Extract important lexical terms from a user query."""
+        return {
+            token
+            for token in HybridRetriever._tokenize(text)
+            if len(token) >= 3 and token not in _QUERY_STOP_WORDS
+        }
 
     @staticmethod
     def _tag_method(document: Document, method: str) -> Document:

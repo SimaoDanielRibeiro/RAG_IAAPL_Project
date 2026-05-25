@@ -8,14 +8,23 @@ import { ChatPane } from "@/components/ChatPane";
 import { EvidencePanel } from "@/components/EvidencePanel";
 import { LandingScreen } from "@/components/LandingScreen";
 import { Sidebar } from "@/components/Sidebar";
+import { SourcePreviewModal } from "@/components/SourcePreviewModal";
+import type { SourcePreviewTarget } from "@/components/SourcePreviewModal";
 import { api } from "@/lib/api";
 import { stripMarkdown } from "@/lib/text";
 import type {
   AnswerMode,
   ChatMessage,
   ChatResponse,
+  ChunkInfo,
   DocumentInfo,
+  SummaryResponse,
 } from "@/types";
+
+type SummarySuggestion = {
+  documentIds: string[];
+  label: string;
+};
 
 export default function App() {
   const [showLanding, setShowLanding] = useState(true);
@@ -29,9 +38,12 @@ export default function App() {
   const [answerMode, setAnswerMode] = useState<AnswerMode>("standard");
   const [isIndexing, setIsIndexing] = useState(false);
   const [isAnswering, setIsAnswering] = useState(false);
+  const [isSummarizing, setIsSummarizing] = useState(false);
+  const [summarySuggestion, setSummarySuggestion] = useState<SummarySuggestion | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [chatError, setChatError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [previewTarget, setPreviewTarget] = useState<SourcePreviewTarget | null>(null);
 
   const chatHistoryRef = useRef<Array<{ role: string; content: string }>>([]);
 
@@ -41,6 +53,7 @@ export default function App() {
       chatHistoryRef.current = [];
       setActiveEvidence(null);
       setSelectedDocumentIds([]);
+      setSummarySuggestion(null);
     }
   }, [documents.length]);
 
@@ -71,6 +84,7 @@ export default function App() {
       setMessages([]);
       chatHistoryRef.current = [];
       setActiveEvidence(null);
+      setSummarySuggestion(createSummarySuggestion(result.documents));
     } catch (error) {
       setUploadError(error instanceof Error ? error.message : "Upload failed.");
     } finally {
@@ -91,6 +105,7 @@ export default function App() {
       await api.removeDocument(id);
       setDocuments((prev) => prev.filter((d) => d.id !== id));
       setSelectedDocumentIds((prev) => prev.filter((x) => x !== id));
+      setSummarySuggestion(null);
     } catch (error) {
       setUploadError(
         error instanceof Error ? error.message : "Could not remove document.",
@@ -103,11 +118,12 @@ export default function App() {
     setChatError(null);
     setActiveEvidence(null);
     chatHistoryRef.current = [];
-  }, []);
+    setSummarySuggestion(createSummarySuggestion(documents, selectedDocumentIds));
+  }, [documents, selectedDocumentIds]);
 
   const handleSend = useCallback(
     async (question: string) => {
-      if (!question.trim() || isAnswering || !documents.length) return;
+      if (!question.trim() || isAnswering || isSummarizing || !documents.length) return;
 
       const userMessage: ChatMessage = {
         id: uuidv4(),
@@ -125,6 +141,7 @@ export default function App() {
 
       setMessages((prev) => [...prev, userMessage, assistantMessage]);
       setChatError(null);
+      setSummarySuggestion(null);
       setIsAnswering(true);
       setStreamingId(assistantId);
       chatHistoryRef.current.push({ role: "user", content: userMessage.content });
@@ -186,6 +203,7 @@ export default function App() {
           role: "assistant",
           content: stripMarkdown(accumulated),
         });
+        setSummarySuggestion(createSummarySuggestion(documents, scopeIds));
       } catch (error) {
         chatHistoryRef.current.pop();
         setMessages((prev) => prev.filter((m) => m.id !== assistantId));
@@ -197,8 +215,46 @@ export default function App() {
         setStreamingId(null);
       }
     },
-    [answerMode, documents.length, isAnswering, selectedDocumentIds],
+    [answerMode, documents, isAnswering, isSummarizing, selectedDocumentIds],
   );
+
+  const handleSummary = useCallback(async () => {
+    if (!summarySuggestion || isAnswering || isSummarizing || !documents.length) return;
+
+    const suggestion = summarySuggestion;
+    const assistantId = uuidv4();
+    const placeholder: ChatMessage = {
+      id: assistantId,
+      role: "assistant",
+      content: `Preparing a complete summary for ${suggestion.label}...`,
+      isSummary: true,
+      timestamp: new Date(),
+    };
+
+    setSummarySuggestion(null);
+    setChatError(null);
+    setIsSummarizing(true);
+    setMessages((prev) => [...prev, placeholder]);
+
+    try {
+      const result = await api.summary(suggestion.documentIds);
+      const content = formatSummaryResponse(result, suggestion.label);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantId
+            ? { ...m, content, summaryData: result }
+            : m,
+        ),
+      );
+    } catch (error) {
+      setMessages((prev) => prev.filter((m) => m.id !== assistantId));
+      setChatError(
+        error instanceof Error ? error.message : "Summary request failed.",
+      );
+    } finally {
+      setIsSummarizing(false);
+    }
+  }, [documents.length, isAnswering, isSummarizing, summarySuggestion]);
 
   const handleCitationClick = useCallback(
     (chunkIdx: number, evidence: ChatResponse) => {
@@ -209,6 +265,16 @@ export default function App() {
     },
     [],
   );
+
+  const handleOpenSource = useCallback((chunk: ChunkInfo) => {
+    if (!chunk.document_id) return;
+    setPreviewTarget({
+      documentId: chunk.document_id,
+      source:     chunk.source,
+      page:       chunk.page,
+      snippet:    chunk.snippet,
+    });
+  }, []);
 
   return (
     <main className="relative h-screen overflow-hidden bg-app text-primary">
@@ -236,14 +302,18 @@ export default function App() {
         <ChatPane
           documents={documents}
           messages={messages}
-          isAnswering={isAnswering}
+          isAnswering={isAnswering || isSummarizing}
           isIndexing={isIndexing}
           chatError={chatError}
           selectedDocumentIds={selectedDocumentIds}
           streamingId={streamingId}
+          summarySuggestion={summarySuggestion}
+          isSummarizing={isSummarizing}
           onSend={handleSend}
           onUpload={handleUpload}
           onClearScope={() => setSelectedDocumentIds([])}
+          onSummary={handleSummary}
+          onDismissSummary={() => setSummarySuggestion(null)}
           onCitationClick={handleCitationClick}
         />
 
@@ -254,6 +324,7 @@ export default function App() {
               evidence={activeEvidence}
               highlightedIndex={highlightedChunk}
               onClose={() => setEvidenceOpen(false)}
+              onOpenSource={handleOpenSource}
             />
           ) : (
             <motion.button
@@ -272,6 +343,11 @@ export default function App() {
           )}
         </AnimatePresence>
       </div>
+
+      <SourcePreviewModal
+        target={previewTarget}
+        onClose={() => setPreviewTarget(null)}
+      />
     </main>
   );
 }
@@ -280,6 +356,37 @@ export default function App() {
    Three large blurred radial blobs drifting slowly. Sits
    behind the glassmorphic Sidebar / EvidencePanel so the
    backdrop-blur picks up motion and color. */
+
+function createSummarySuggestion(
+  documents: DocumentInfo[],
+  documentIds: string[] = [],
+): SummarySuggestion | null {
+  const scopedDocuments = documentIds.length
+    ? documents.filter((document) => documentIds.includes(document.id))
+    : documents;
+  if (!scopedDocuments.length) return null;
+
+  const label =
+    scopedDocuments.length === 1
+      ? scopedDocuments[0].name
+      : `${scopedDocuments.length} documents`;
+  return { documentIds, label };
+}
+
+function formatSummaryResponse(result: SummaryResponse, fallbackLabel: string): string {
+  if (!result.summaries.length) {
+    return `No summary could be generated for ${fallbackLabel}.`;
+  }
+
+  return result.summaries
+    .map((entry) => {
+      const pages = entry.pages.length
+        ? `\nPages used: ${entry.pages.join(", ")}`
+        : "";
+      return `Complete summary of ${entry.file_name}\n\n${entry.summary}${pages}`;
+    })
+    .join("\n\n");
+}
 
 function MeshBackground() {
   return (

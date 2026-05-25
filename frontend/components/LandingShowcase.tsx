@@ -1815,7 +1815,10 @@ function renderWithCitations(text: string): ReactNode[] {
   // the whole answer so chip numbers stay consistent with the evidence list.
   const indexMap = new Map<string, number>();
   let counter    = 0;
-  for (const m of clean.matchAll(CITATION_PATTERN)) {
+  CITATION_PATTERN.lastIndex = 0;
+  let globalMatch: RegExpExecArray | null;
+  while ((globalMatch = CITATION_PATTERN.exec(clean)) !== null) {
+    const m = globalMatch;
     const key = `${m[1].toLowerCase()}|${m[2] || ""}`;
     if (!indexMap.has(key)) {
       counter++;
@@ -1827,7 +1830,10 @@ function renderWithCitations(text: string): ReactNode[] {
   clean.split("\n").forEach((line, lineIdx, lines) => {
     const found: Array<{ idx: number; label: string }> = [];
     const seen  = new Set<number>();
-    for (const m of line.matchAll(CITATION_PATTERN)) {
+    CITATION_PATTERN.lastIndex = 0;
+    let lineMatch: RegExpExecArray | null;
+    while ((lineMatch = CITATION_PATTERN.exec(line)) !== null) {
+      const m = lineMatch;
       const key = `${m[1].toLowerCase()}|${m[2] || ""}`;
       const idx = indexMap.get(key)!;
       if (seen.has(idx)) continue;

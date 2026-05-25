@@ -11,17 +11,9 @@ Always mention page numbers and source file names when possible.
 """.strip()
 
 
-_CITATION_FORMAT_RULE = (
-    "CITATION FORMAT (CRITICAL): cite every claim using square brackets in EXACTLY "
-    "this format: [filename, p.N] — for example [report.pdf, p.3]. Use this exact "
-    "format inside bullet points and lists too. If no page is known: [report.pdf]. "
-    "Do NOT wrap citations in bold/italic, do NOT use parentheses, do NOT add "
-    '"Source:" or any prefix inside the brackets. Do not fabricate citations.'
-)
-
 _FORMAT_RULE = (
     "PLAIN TEXT FORMAT (CRITICAL): write the answer as plain prose. "
-    "Do NOT use markdown formatting — no asterisks for bold (**), no asterisks for "
+    "Do NOT use markdown formatting - no asterisks for bold (**), no asterisks for "
     "italic (*), no underscores for emphasis (__ or _), no hash signs for headers "
     "(#, ##, ###), no horizontal rules (---). Use plain paragraphs separated by "
     "blank lines. Plain hyphen bullets (- item) are allowed only when the answer is "
@@ -38,7 +30,7 @@ _NO_SOURCE_NARRATION_RULE = (
     '"where it says", "this is stated in", "is emphasized on page X", '
     '"is explicitly stated in". '
     "The citation markers at the end of each paragraph already tell the user where "
-    "the information came from — the prose itself must read as a direct answer. "
+    "the information came from - the prose itself must read as a direct answer. "
     "Paraphrase the content in your own words. Do NOT copy long verbatim quotations "
     "from the source; convert any quoted text into concise paraphrased wording. "
     "Short technical phrases (a method name, a header, a literal value) may stay as "
@@ -48,23 +40,35 @@ _NO_SOURCE_NARRATION_RULE = (
 
 _STANDARD_CITATION_RULE = (
     'Do NOT add any inline citations in the answer text. No "[filename, p.N]", '
-    'no "(filename)", no parenthetical sources. The user already sees the '
-    "supporting sources separately in the Evidence panel."
+    'no "[1]", no "(filename)", no parenthetical sources. The user already '
+    "sees the supporting sources separately in the Evidence panel."
 )
 
+
+_EXHAUSTIVE_CITATION_FORMAT_RULE = (
+    "CITATION FORMAT (CRITICAL): cite every claim using the numeric EVIDENCE ID "
+    "shown in the context headers, in EXACTLY this answer format: [1], [2], [3]. "
+    "The number inside the brackets MUST come from an EVIDENCE ID header. Do NOT "
+    "cite filenames or page numbers in brackets. Do NOT copy bracketed "
+    "bibliography/reference numbers that appear inside the document text. "
+    "Do NOT wrap citations in bold/italic, do NOT use parentheses, do NOT add "
+    '"Source:" or any prefix inside the brackets. Do not fabricate citations.'
+)
+
+
 _EXHAUSTIVE_CITATION_RULE = (
-    _CITATION_FORMAT_RULE
+    _EXHAUSTIVE_CITATION_FORMAT_RULE
     + " CITATION PLACEMENT: every paragraph MUST contain at least one inline "
-    "citation in the [filename, p.N] format. Place the citation at the very END "
-    "of the paragraph it supports — never inside a sentence and never narrated "
+    "citation in the numbered [N] format. Place the citation at the very END "
+    "of the paragraph it supports - never inside a sentence and never narrated "
     "as part of the prose. If a paragraph combines facts from two or more "
-    "sources, put ALL the citations together at the end of that paragraph. "
-    "A paragraph with no citation is not acceptable."
+    "evidence blocks, put ALL the citations together at the end of that "
+    "paragraph. A paragraph with no citation is not acceptable."
 )
 
 
 _STANDARD_LENGTH_RULE = (
-    "Keep the answer direct and concise — typically 2 to 4 sentences in plain "
+    "Keep the answer direct and concise - typically 2 to 4 sentences in plain "
     "prose. Synthesize the relevant facts smoothly."
 )
 
@@ -72,7 +76,7 @@ _EXHAUSTIVE_LENGTH_RULE = (
     "Give a thorough, complete answer that extracts as much relevant information "
     "from the context as possible. Structure the answer as multiple plain "
     "paragraphs separated by blank lines. Each paragraph develops one aspect of "
-    "the answer. Do NOT use markdown section headers — start each new aspect "
+    "the answer. Do NOT use markdown section headers - start each new aspect "
     "with a normal sentence. Use plain hyphen bullets (- item) only when the "
     'question explicitly asks for an enumerated list (e.g. "list all items", '
     '"what are the steps"). When using bullets, place the citation at the end '
@@ -95,7 +99,7 @@ Context:
 
 Question:
 {question}
-
+__CITATION_FEEDBACK__
 Instructions:
 - Use the context to answer the question. Extract whatever is relevant; do not refuse just because the wording differs from the question.
 - __CITATION_RULE__
@@ -110,10 +114,24 @@ Instructions:
 """.strip()
 
 
-def _build_answer_prompt(citation_rule: str, length_rule: str) -> str:
-    """Inject the mode-specific citation and length rules into the shared base."""
+def _build_answer_prompt(
+    citation_rule: str,
+    length_rule: str,
+    *,
+    include_citation_feedback: bool,
+) -> str:
+    """Inject the mode-specific citation/length rules into the shared base.
+
+    Only the exhaustive template gets a `{citation_feedback}` placeholder.
+    The standard template has no such hook because standard mode never uses
+    the citation retry loop — passing an unused variable to the prompt would
+    leave a confusing empty line in the prompt and a dead parameter in the
+    generator interface.
+    """
+    feedback_placeholder = "\n{citation_feedback}\n" if include_citation_feedback else ""
     return (
         _BASE_ANSWER_PROMPT_TEMPLATE
+        .replace("__CITATION_FEEDBACK__", feedback_placeholder)
         .replace("__CITATION_RULE__", citation_rule)
         .replace("__FORMAT_RULE__", _FORMAT_RULE)
         .replace("__NO_SOURCE_NARRATION_RULE__", _NO_SOURCE_NARRATION_RULE)
@@ -123,11 +141,15 @@ def _build_answer_prompt(citation_rule: str, length_rule: str) -> str:
 
 
 ANSWER_PROMPT_TEMPLATE = _build_answer_prompt(
-    _STANDARD_CITATION_RULE, _STANDARD_LENGTH_RULE
+    _STANDARD_CITATION_RULE,
+    _STANDARD_LENGTH_RULE,
+    include_citation_feedback=False,
 )
 
 EXHAUSTIVE_ANSWER_PROMPT_TEMPLATE = _build_answer_prompt(
-    _EXHAUSTIVE_CITATION_RULE, _EXHAUSTIVE_LENGTH_RULE
+    _EXHAUSTIVE_CITATION_RULE,
+    _EXHAUSTIVE_LENGTH_RULE,
+    include_citation_feedback=True,
 )
 
 
@@ -168,8 +190,13 @@ Give only a relevance score from 1 to 10.
 SUMMARY_PROMPT_TEMPLATE = """
 You are summarizing an uploaded document for a student demo.
 Use only the provided context; do not invent facts or use outside knowledge.
-Write a short summary in 4 to 6 bullet points based on whatever is present in the context, even if the material is partial or rough.
-Mention page numbers and the source file when possible.
+Write a complete plain-text summary based on whatever is present in the
+context, even if the material is partial or rough.
+Cover the document's purpose, context, key sections, methods or technical
+approach, implementation details, results or conclusions, and limitations or
+future work when those are present.
+Use 6 to 10 concise bullet points or short paragraphs. Mention page numbers
+and the source file when possible.
 
 Context:
 {context}

@@ -11,6 +11,7 @@ from langchain_core.documents import Document
 from langchain_ollama import ChatOllama
 
 from src.rag.config import RAGConfig
+from src.rag.formatting import is_low_value_evidence_text
 from src.rag.prompts import (
     EXHAUSTIVE_RERANK_CRITERIA,
     RERANK_PROMPT_TEMPLATE,
@@ -75,6 +76,14 @@ class DocumentReranker:
         normalized_scores = self._normalize_scores(raw_scores)
         reranked_documents: list[Document] = []
         for document, raw_score, normalized_score in zip(documents, raw_scores, normalized_scores):
+            if (
+                answer_mode == "exhaustive"
+                and document.metadata.get("retrieval_method") == "exact"
+                and not is_low_value_evidence_text(document.page_content)
+            ):
+                exact_score = float(document.metadata.get("exact_match_score") or 0)
+                exact_relevance = min(10, max(8, 6 + round(exact_score / 10)))
+                normalized_score = max(normalized_score, exact_relevance)
             metadata = dict(document.metadata)
             metadata["rerank_score"] = normalized_score
             metadata["rerank_raw_score"] = round(float(raw_score), 4)
@@ -126,7 +135,19 @@ class DocumentReranker:
             if answer_mode == "exhaustive"
             else self.config.standard_final_chunks
         )
-        return sort_by_document_order(ranked[:max_chunks])
+        if answer_mode == "exhaustive":
+            content_ranked = [
+                document for document in ranked
+                if not is_low_value_evidence_text(document.page_content)
+            ]
+            low_value_ranked = [
+                document for document in ranked
+                if is_low_value_evidence_text(document.page_content)
+            ]
+            selected = (content_ranked + low_value_ranked)[:max_chunks]
+            return selected
+        selected = ranked[:max_chunks]
+        return sort_by_document_order(selected)
 
     # ------------------------------------------------------------------
     # CrossEncoder lazy-loading
@@ -175,6 +196,14 @@ class DocumentReranker:
         reranked_documents: list[Document] = []
         for document in documents:
             score = self._score_with_llm(question, document.page_content, criteria)
+            if (
+                answer_mode == "exhaustive"
+                and document.metadata.get("retrieval_method") == "exact"
+                and not is_low_value_evidence_text(document.page_content)
+            ):
+                exact_score = float(document.metadata.get("exact_match_score") or 0)
+                exact_relevance = min(10, max(8, 6 + round(exact_score / 10)))
+                score = max(score, exact_relevance)
             metadata = dict(document.metadata)
             metadata["rerank_score"] = score
             metadata["rerank_score_scale"] = "absolute"
@@ -230,3 +259,27 @@ class DocumentReranker:
         if not scales:
             return "absolute"
         return "relative" if scales.count("relative") > len(scales) // 2 else "absolute"
+
+    @staticmethod
+    def _looks_like_reference_or_outline(text: str) -> bool:
+        lower_text = text.lower()
+        reference_signals = (
+            lower_text.count("http://")
+            + lower_text.count("https://")
+            + lower_text.count("github")
+            + lower_text.count("dispon")
+            + lower_text.count("ultimo acesso")
+            + lower_text.count("último acesso")
+            + lower_text.count("citado na p")
+            + lower_text.count("referencias")
+            + lower_text.count("referências")
+            + lower_text.count("bibliography")
+        )
+        numbered_entries = len(re.findall(r"\[\d+\]", lower_text))
+        dotted_leaders = lower_text.count(". . .")
+        section_number_lines = len(re.findall(r"(?m)^\s*\d+(?:\.\d+)*\s*$", lower_text))
+        return (
+            (reference_signals >= 3 and numbered_entries >= 2)
+            or dotted_leaders >= 3
+            or section_number_lines >= 6
+        )

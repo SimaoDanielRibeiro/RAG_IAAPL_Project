@@ -12,10 +12,16 @@ Blocks are emitted in reading order (top-to-bottom, then left-to-right),
 which preserves single-column flow and works reasonably for two-column
 academic layouts. Text that lives inside a detected table bbox is dropped
 to avoid duplicating cell content as loose paragraphs.
+
+OCR fallback: pages that yield almost no text (typically image-only scans)
+are passed through pytesseract on a high-DPI render of the page. The
+feature is best-effort — if pytesseract is not installed, or the Tesseract
+binary is not on PATH, the page is left as-is and a one-time hint is logged.
 """
 
 from __future__ import annotations
 
+import io
 import logging
 import re
 from pathlib import Path
@@ -24,7 +30,26 @@ from typing import Any, Optional
 
 import fitz  # PyMuPDF
 
+try:
+    import pytesseract
+    from PIL import Image
+    _OCR_AVAILABLE = True
+except ImportError:
+    pytesseract = None  # type: ignore[assignment]
+    Image = None        # type: ignore[assignment]
+    _OCR_AVAILABLE = False
+
 LOGGER = logging.getLogger(__name__)
+
+# Pages with fewer than this many extractable characters are treated as
+# image-only and routed through OCR. Empty PDFs naturally fall under this
+# threshold; the OCR call will just return "" for them.
+_OCR_MIN_TEXT_CHARS = 30
+# 200 DPI is the sweet spot for Tesseract on body text — higher is slower
+# without measurable accuracy gains; lower starts to miss small fonts.
+_OCR_RENDER_DPI = 200
+
+_TESSERACT_MISSING_NOTICE_LOGGED = False
 
 # Caption prefixes the extractor recognises, English + Iberian variants. The
 # match is case-insensitive and anchored to the start of the block so we
@@ -44,20 +69,98 @@ _BOLD_FLAG = 16
 
 
 def extract_pages(path: Path) -> list[str]:
-    """Return a structured text string for every page in the PDF."""
+    """Return a structured text string for every page in the PDF.
+
+    Pages that come back nearly empty are sent to OCR (when available) so
+    scanned PDFs still produce indexable text.
+    """
     pages: list[str] = []
     with fitz.open(str(path)) as doc:
         for page_index in range(doc.page_count):
+            page = doc[page_index]
             try:
-                pages.append(_extract_page(doc[page_index]))
+                rendered = _extract_page(page)
             except Exception:
                 LOGGER.exception(
                     "PyMuPDF extraction failed for page %d of %s; falling back to plain text.",
                     page_index,
                     path.name,
                 )
-                pages.append(doc[page_index].get_text("text"))
+                rendered = page.get_text("text")
+
+            if len(rendered.strip()) < _OCR_MIN_TEXT_CHARS:
+                ocr_text = _ocr_page(page, page_index, path.name)
+                if ocr_text.strip():
+                    rendered = ocr_text
+
+            pages.append(rendered)
     return pages
+
+
+def _ocr_page(page: "fitz.Page", page_index: int, file_name: str) -> str:
+    """Render the page as an image and run Tesseract on it.
+
+    Returns ``""`` when OCR is unavailable or fails. Never raises — the caller
+    treats an empty OCR result as "no text on this page".
+    """
+    global _TESSERACT_MISSING_NOTICE_LOGGED
+
+    if not _OCR_AVAILABLE:
+        if not _TESSERACT_MISSING_NOTICE_LOGGED:
+            LOGGER.info(
+                "pytesseract / Pillow are not installed; skipping OCR for "
+                "image-only PDF pages. Install them (and the Tesseract binary) "
+                "to enable scanned-PDF support."
+            )
+            _TESSERACT_MISSING_NOTICE_LOGGED = True
+        return ""
+
+    try:
+        zoom = _OCR_RENDER_DPI / 72.0
+        pixmap = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+        image = Image.open(io.BytesIO(pixmap.tobytes("png")))
+    except Exception as error:
+        LOGGER.warning(
+            "Could not render page %d of %s for OCR: %s",
+            page_index + 1, file_name, error,
+        )
+        return ""
+
+    # Try Portuguese + English first since the project mixes languages; fall
+    # back to whatever the local Tesseract install ships (usually 'eng').
+    for lang in ("eng+por", None):
+        try:
+            text = pytesseract.image_to_string(image, lang=lang) if lang else \
+                pytesseract.image_to_string(image)
+            if text.strip():
+                LOGGER.info(
+                    "OCR extracted %d chars for page %d of %s (lang=%s).",
+                    len(text.strip()), page_index + 1, file_name, lang or "default",
+                )
+            return text
+        except pytesseract.TesseractNotFoundError:
+            if not _TESSERACT_MISSING_NOTICE_LOGGED:
+                LOGGER.warning(
+                    "Tesseract binary not found on PATH; install it to enable "
+                    "OCR for scanned PDFs (see README). pytesseract is installed "
+                    "but the binary is the system component it wraps."
+                )
+                _TESSERACT_MISSING_NOTICE_LOGGED = True
+            return ""
+        except pytesseract.TesseractError as error:
+            # Language pack missing (eg. 'por.traineddata') — retry without lang.
+            LOGGER.debug(
+                "Tesseract error with lang=%s on page %d of %s: %s",
+                lang, page_index + 1, file_name, error,
+            )
+            continue
+        except Exception as error:
+            LOGGER.warning(
+                "OCR failed for page %d of %s: %s",
+                page_index + 1, file_name, error,
+            )
+            return ""
+    return ""
 
 
 def _extract_page(page: "fitz.Page") -> str:

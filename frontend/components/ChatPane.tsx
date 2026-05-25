@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { motion } from "framer-motion";
-import { Check, Copy, Layers, Upload } from "lucide-react";
+import { Check, Copy, Layers, Sparkles, Upload, X } from "lucide-react";
 import { Composer } from "@/components/Composer";
 import { Logo } from "@/components/Logo";
 import { stripMarkdown } from "@/lib/text";
@@ -17,9 +17,13 @@ type ChatPaneProps = {
   chatError: string | null;
   selectedDocumentIds: string[];
   streamingId?: string | null;
+  summarySuggestion?: { label: string } | null;
+  isSummarizing?: boolean;
   onSend: (question: string) => void;
   onUpload: (files: File[]) => void;
   onClearScope: () => void;
+  onSummary?: () => void;
+  onDismissSummary?: () => void;
   onCitationClick?: (chunkIndex: number, evidence: ChatResponse) => void;
 };
 
@@ -31,9 +35,13 @@ export function ChatPane({
   chatError,
   selectedDocumentIds,
   streamingId,
+  summarySuggestion,
+  isSummarizing = false,
   onSend,
   onUpload,
   onClearScope,
+  onSummary,
+  onDismissSummary,
   onCitationClick,
 }: ChatPaneProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -123,7 +131,11 @@ export function ChatPane({
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-11 pb-[172px] pt-8">
+      <div
+        className={`min-h-0 flex-1 overflow-y-auto px-11 pt-8 ${
+          summarySuggestion ? "pb-[236px]" : "pb-[172px]"
+        }`}
+      >
         <div className="mx-auto flex max-w-[760px] flex-col gap-10">
           {!messages.length && !isAnswering && (
             <div className="pt-24 text-center">
@@ -158,6 +170,14 @@ export function ChatPane({
 
       <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-app via-app/85 to-transparent px-11 pb-6 pt-10">
         <div className="pointer-events-auto mx-auto max-w-[760px]">
+          {summarySuggestion && onSummary && onDismissSummary && (
+            <SummarySuggestionCard
+              label={summarySuggestion.label}
+              busy={isSummarizing}
+              onSummary={onSummary}
+              onDismiss={onDismissSummary}
+            />
+          )}
           <Composer
             disabled={!documentCount || isIndexing}
             busy={isAnswering}
@@ -184,6 +204,7 @@ function MessageRow({
   const evidence = message.evidence;
   const chunks   = evidence?.documents ?? [];
   const isEmptyStream = isStreaming && !message.content;
+  const isSummary = !!message.isSummary;
 
   const handleCitation = evidence && onCitationClick
     ? (idx: number) => onCitationClick(idx, evidence)
@@ -218,6 +239,12 @@ function MessageRow({
         </div>
       ) : (
         <div className="group w-full max-w-[590px]">
+          {isSummary && !isEmptyStream && (
+            <div className="mb-3 inline-flex items-center gap-2 rounded-md border border-accent/30 bg-accent/10 px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.08em] text-accent">
+              <Sparkles size={12} strokeWidth={1.9} />
+              Complete summary
+            </div>
+          )}
           {isEmptyStream ? (
             <p className="text-[16px] leading-[1.7] text-primary">
               Searching your documents and checking evidence
@@ -225,7 +252,12 @@ function MessageRow({
             </p>
           ) : (
             <p className="whitespace-pre-wrap text-[16px] leading-[1.7] text-primary">
-              {renderAnswerWithCitations(message.content, chunks, handleCitation)}
+              {renderAnswerWithCitations(
+                message.content,
+                chunks,
+                handleCitation,
+                evidence?.answer_mode,
+              )}
               {isStreaming && (
                 <span className="lumen-caret ml-1 inline-block h-[18px] w-px translate-y-0.5 bg-primary" />
               )}
@@ -247,6 +279,59 @@ function MessageRow({
           </div>
         </div>
       )}
+    </motion.div>
+  );
+}
+
+function SummarySuggestionCard({
+  label,
+  busy,
+  onSummary,
+  onDismiss,
+}: {
+  label: string;
+  busy: boolean;
+  onSummary: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: 8 }}
+      transition={{ duration: 0.2, ease: "easeOut" }}
+      className="mb-3 flex items-center gap-3 rounded-[12px] border border-accent/30 bg-accent/10 px-4 py-3 backdrop-blur-sm"
+    >
+      <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-accent/20 text-accent">
+        <Sparkles size={14} strokeWidth={1.9} />
+      </span>
+
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-[13px] font-medium text-primary">
+          Generate a complete summary?
+        </p>
+        <p className="truncate text-[12px] text-secondary">{label}</p>
+      </div>
+
+      <button
+        type="button"
+        onClick={onSummary}
+        disabled={busy}
+        className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-accent px-3 text-[12px] font-medium text-app transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        <Sparkles size={12} strokeWidth={2} />
+        {busy ? "Summarizing..." : "Summarize"}
+      </button>
+
+      <button
+        type="button"
+        aria-label="Dismiss summary suggestion"
+        onClick={onDismiss}
+        disabled={busy}
+        className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-secondary transition-colors hover:bg-hover hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        <X size={14} strokeWidth={1.8} />
+      </button>
     </motion.div>
   );
 }
@@ -309,6 +394,7 @@ function EmptyState({
 //   [Source: file.pdf, p.5]     · common prefix
 const CITATION_PATTERN =
   /\[\s*\**\s*([^\[\]*]+?\.(?:pdf|docx|txt|md))\s*\**\s*(?:[,\s]+(?:pp?\.?|pages?)?\s*(\d+)[^\]]*)?\s*\]/gi;
+const NUMBERED_EVIDENCE_PATTERN = /\[\s*(\d{1,3})\s*\]/g;
 
 function cleanFilename(raw: string): string {
   return raw
@@ -389,9 +475,11 @@ function renderAnswerWithCitations(
   text: string,
   chunks: ChunkInfo[],
   onCitationClick?: (chunkIndex: number) => void,
+  answerMode?: string,
 ): ReactNode[] {
   if (!text) return [];
   const clean = stripMarkdown(text);
+  const useNumberedEvidence = answerMode === "exhaustive";
 
   // Process per line so each paragraph (and each bullet) gets its OWN cluster
   // of chips appended at its end. The body text is never altered; we only
@@ -403,8 +491,27 @@ function renderAnswerWithCitations(
     const found: Array<{ chunkIdx: number; label: string }> = [];
     const seen  = new Set<string>();
 
-    for (const m of line.matchAll(CITATION_PATTERN)) {
+    if (useNumberedEvidence) {
+      NUMBERED_EVIDENCE_PATTERN.lastIndex = 0;
+      let numberedMatch: RegExpExecArray | null;
+      while ((numberedMatch = NUMBERED_EVIDENCE_PATTERN.exec(line)) !== null) {
+        const m = numberedMatch;
+        const evidenceNumber = parseInt(m[1], 10);
+        const chunkIdx = evidenceNumber - 1;
+        if (chunkIdx < 0 || chunkIdx >= chunks.length) continue;
+        const key = `c${chunkIdx}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        found.push({ chunkIdx, label: `Evidence ${evidenceNumber}` });
+      }
+    }
+
+    CITATION_PATTERN.lastIndex = 0;
+    let citationMatch: RegExpExecArray | null;
+    while ((citationMatch = CITATION_PATTERN.exec(line)) !== null) {
+      const m = citationMatch;
       const chunkIdx = findChunkIndex(chunks, m[1], m[2]);
+      if (useNumberedEvidence && chunkIdx < 0) continue;
       const label    = m[2] ? `${m[1]}, p.${m[2]}` : m[1];
       // Dedupe so a paragraph that cites the same chunk twice gets only one
       // chip at the end. Unmatched citations are deduped on their label.
@@ -417,6 +524,10 @@ function renderAnswerWithCitations(
     // Remove the bracket markers and clean up whitespace artifacts they leave
     // (double spaces, an orphan space before punctuation, trailing spaces).
     const stripped = line
+      .replace(
+        useNumberedEvidence ? NUMBERED_EVIDENCE_PATTERN : /$^/g,
+        "",
+      )
       .replace(CITATION_PATTERN, "")
       .replace(/[ \t]+([.,!?;:])/g, "$1")
       .replace(/[ \t]{2,}/g, " ")
@@ -472,13 +583,13 @@ function CitationChip({
           ? `Open evidence ${index} — ${label}`
           : `${label} (no matching chunk)`
       }
-      className={`mx-0.5 inline-flex h-[20px] min-w-[20px] -translate-y-px items-center justify-center rounded-[5px] border border-accent/40 bg-accent/10 px-1 align-middle text-[10.5px] font-medium leading-none text-accent transition-all ${
+      className={`mx-0.5 inline-flex h-[20px] min-w-[28px] -translate-y-px items-center justify-center rounded-[5px] border border-accent/40 bg-accent/10 px-1.5 align-middle text-[10.5px] font-medium leading-none text-accent transition-all ${
         interactive
           ? "cursor-pointer hover:border-accent hover:bg-accent/25 hover:shadow-[0_0_8px_rgba(224,177,91,0.4)]"
           : "cursor-default opacity-50"
       }`}
     >
-      {index ?? "?"}
+      {index !== null ? `[${index}]` : "?"}
     </button>
   );
 }

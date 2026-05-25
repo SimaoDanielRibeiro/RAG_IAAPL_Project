@@ -73,20 +73,37 @@ class AnswerGenerator:
     def __init__(self, chat_model: ChatOllama) -> None:
         self.chat_model = chat_model
 
-    def answer(self, context: str, question: str, answer_mode: str) -> str:
+    def answer(
+        self,
+        context: str,
+        question: str,
+        answer_mode: str,
+        citation_feedback: str = "",
+    ) -> str:
         """Generate an answer using only the retrieved context.
+
+        `citation_feedback` is only meaningful in exhaustive mode (the
+        validation retry loop in the pipeline passes the previous attempt's
+        validator complaints back into the prompt). Standard mode ignores it
+        because its template has no feedback slot.
 
         Returns `FALLBACK_ANSWER` if the model returns an empty string.
         Exceptions from the chat model propagate to the caller, which is
         expected to surface them in the UI.
         """
-        prompt = (
-            _EXHAUSTIVE_ANSWER_PROMPT
-            if answer_mode == "exhaustive"
-            else _ANSWER_PROMPT
-        )
+        if answer_mode == "exhaustive":
+            prompt = _EXHAUSTIVE_ANSWER_PROMPT
+            inputs = {
+                "context": context,
+                "question": question,
+                "citation_feedback": citation_feedback,
+            }
+        else:
+            prompt = _ANSWER_PROMPT
+            inputs = {"context": context, "question": question}
+
         chain = prompt | self.chat_model | StrOutputParser()
-        result = chain.invoke({"context": context, "question": question}).strip()
+        result = chain.invoke(inputs).strip()
         result = _strip_markdown(result)
         result = _strip_trailing_fallback(result, FALLBACK_ANSWER).rstrip()
         return result or FALLBACK_ANSWER
@@ -96,17 +113,25 @@ class AnswerGenerator:
     ) -> AsyncIterator[str]:
         """Stream answer tokens. Token chunks are non-empty strings.
 
-        A tail buffer holds back the last few characters so a trailing
-        `FALLBACK_ANSWER` the model occasionally appends as a closing
-        disclaimer can be removed before the tokens reach the UI.
+        Only used by standard mode: exhaustive mode goes through the
+        synchronous `answer` path so it can run citation validation + retry
+        on the complete answer. A tail buffer holds back the last few
+        characters so a trailing `FALLBACK_ANSWER` the model occasionally
+        appends as a closing disclaimer can be removed before the tokens
+        reach the UI.
 
         Errors propagate; the caller surfaces them to the UI.
         """
-        prompt = (
-            _EXHAUSTIVE_ANSWER_PROMPT
-            if answer_mode == "exhaustive"
-            else _ANSWER_PROMPT
-        )
+        if answer_mode == "exhaustive":
+            prompt = _EXHAUSTIVE_ANSWER_PROMPT
+            inputs = {
+                "context": context,
+                "question": question,
+                "citation_feedback": "",
+            }
+        else:
+            prompt = _ANSWER_PROMPT
+            inputs = {"context": context, "question": question}
         chain = prompt | self.chat_model | StrOutputParser()
 
         # Keep enough of the trailing text in the buffer to recognise the
@@ -114,7 +139,7 @@ class AnswerGenerator:
         tail_size = len(FALLBACK_ANSWER) + 32
         buffer = ""
 
-        async for chunk in chain.astream({"context": context, "question": question}):
+        async for chunk in chain.astream(inputs):
             if not chunk:
                 continue
             buffer += chunk

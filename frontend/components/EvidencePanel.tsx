@@ -1,12 +1,14 @@
+import { useState } from "react";
 import { motion } from "framer-motion";
-import { X } from "lucide-react";
+import { ChevronDown, ChevronRight, Layers, X } from "lucide-react";
 import { EvidenceCard } from "@/components/EvidenceCard";
-import type { ChatResponse } from "@/types";
+import type { ChatResponse, ChunkInfo } from "@/types";
 
 type EvidencePanelProps = {
   evidence: ChatResponse | null;
   highlightedIndex?: number | null;
   onClose: () => void;
+  onOpenSource?: (chunk: ChunkInfo) => void;
 };
 
 const CONFIDENCE_STYLES: Record<
@@ -18,8 +20,16 @@ const CONFIDENCE_STYLES: Record<
   Low:    { dot: "bg-[#F97316]", text: "text-[#F97316]",  label: "Low confidence"   },
 };
 
-export function EvidencePanel({ evidence, highlightedIndex, onClose }: EvidencePanelProps) {
+export function EvidencePanel({
+  evidence,
+  highlightedIndex,
+  onClose,
+  onOpenSource,
+}: EvidencePanelProps) {
+  const [contextOpen, setContextOpen] = useState(false);
+
   const chunks     = evidence?.documents ?? [];
+  const contextChunks = evidence?.context_documents ?? [];
   const confidence = evidence?.confidence ?? null;
   const conf       = confidence ? CONFIDENCE_STYLES[confidence] : null;
 
@@ -160,6 +170,7 @@ export function EvidencePanel({ evidence, highlightedIndex, onClose }: EvidenceP
                   chunk={chunk}
                   index={index}
                   isHighlighted={highlightedIndex === index}
+                  onOpenSource={onOpenSource ? () => onOpenSource(chunk) : undefined}
                 />
               ))}
             </div>
@@ -168,6 +179,42 @@ export function EvidencePanel({ evidence, highlightedIndex, onClose }: EvidenceP
               Ask a question after uploading files. Lumen will show only the
               retrieved excerpts returned by your backend.
             </div>
+          )}
+
+          {/* ── Additional context ─────────────────── */}
+          {contextChunks.length > 0 && (
+            <section className="mt-6">
+              <button
+                type="button"
+                onClick={() => setContextOpen((v) => !v)}
+                className="flex w-full items-center justify-between gap-2 rounded-md px-1 py-1.5 text-[12px] font-medium text-secondary transition-colors hover:text-primary"
+              >
+                <span className="inline-flex items-center gap-2">
+                  {contextOpen
+                    ? <ChevronDown size={13} strokeWidth={2} />
+                    : <ChevronRight size={13} strokeWidth={2} />}
+                  <Layers size={12} strokeWidth={1.8} className="text-muted" />
+                  Additional context the model saw
+                </span>
+                <span className="text-[11px] text-muted">
+                  {contextChunks.length} chunk{contextChunks.length === 1 ? "" : "s"}
+                </span>
+              </button>
+
+              {contextOpen && (
+                <div className="mt-3 space-y-3">
+                  {contextChunks.map((chunk, index) => (
+                    <EvidenceCard
+                      key={`ctx-${chunk.source}-${chunk.page ?? "x"}-${index}`}
+                      chunk={chunk}
+                      index={index}
+                      variant="context"
+                      onOpenSource={onOpenSource ? () => onOpenSource(chunk) : undefined}
+                    />
+                  ))}
+                </div>
+              )}
+            </section>
           )}
         </div>
       </div>

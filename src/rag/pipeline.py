@@ -14,6 +14,7 @@ from src.rag.chunking import DocumentChunker
 from src.rag.config import FALLBACK_ANSWER, RAGConfig
 from src.rag.file_storage import FileStorage
 from src.rag.formatting import (
+    align_numbered_citations_to_documents,
     average_rerank_score,
     build_context,
     confidence_label,
@@ -21,13 +22,38 @@ from src.rag.formatting import (
     extract_source_names,
     format_citations,
     has_weak_evidence,
+    place_numbered_citations_at_line_end,
+    prune_invalid_numbered_citations,
+    validate_numbered_citations,
 )
 from src.rag.generation import AnswerGenerator
 from src.rag.querying import QueryProcessor
 from src.rag.reranking import DocumentReranker
-from src.rag.retrieval import HybridRetriever, deduplicate_documents
+from src.rag.retrieval import HybridRetriever, deduplicate_documents, sort_by_document_order
 from src.rag.vector_store import VectorStoreManager
 from src.utils import ensure_directory
+
+
+def _citation_retry_prompt(feedback: str) -> str:
+    """Build retry instructions for failed exhaustive-mode citations."""
+    return (
+        "Citation validation feedback from the previous attempt:\n"
+        f"{feedback}\n\n"
+        "Rewrite the answer from scratch using only the numbered EVIDENCE ID blocks. "
+        "Keep only claims that are directly supported by the cited evidence. "
+        "Use only numbers from EVIDENCE ID headers, formatted as [N], and put "
+        "all citations for each paragraph at the very end of that paragraph. "
+        "Do not write phrases such as 'according to Evidence [1]' in the prose; "
+        "the prose should be a direct answer followed by [N] citations."
+    )
+
+
+def _chunk_key(document: Document) -> tuple[Any, Any]:
+    """Stable identity for a chunk: (source file, chunk_index)."""
+    return (
+        document.metadata.get("source"),
+        document.metadata.get("chunk_index"),
+    )
 
 
 class DocumentRAGPipeline:
@@ -164,8 +190,11 @@ class DocumentRAGPipeline:
             return payload
 
         try:
-            answer = self.generator.answer(
-                prep["context"], prep["retrieval_question"], answer_mode
+            answer = self.generate_answer(
+                prep["context"],
+                prep["retrieval_question"],
+                answer_mode,
+                prep["documents"],
             )
         except Exception as error:
             self.logger.exception("Answer generation failed")
@@ -174,8 +203,65 @@ class DocumentRAGPipeline:
             ) from error
 
         payload = {k: v for k, v in prep.items() if k != "fallback"}
+        if answer_mode == "exhaustive":
+            return self.finalize_exhaustive_response(payload, answer)
+
         payload["answer"] = answer
         return payload
+
+    def generate_answer(
+        self,
+        context: str,
+        question: str,
+        answer_mode: str,
+        documents: list[Document] | None = None,
+    ) -> str:
+        """Generate an answer, validating numbered citations in exhaustive mode."""
+        if answer_mode != "exhaustive":
+            return self.generator.answer(context, question, answer_mode)
+        return self._generate_exhaustive_answer_with_valid_citations(
+            context=context,
+            question=question,
+            documents=documents or [],
+        )
+
+    def finalize_exhaustive_response(
+        self,
+        payload: dict[str, Any],
+        answer: str,
+    ) -> dict[str, Any]:
+        """Compact exhaustive evidence to only the blocks cited by the answer.
+
+        Chunks that were selected by the reranker but never cited by the model
+        are moved into `context_documents` so the UI can still surface them as
+        "additional context the LLM saw" without polluting the cited evidence.
+        """
+        documents = payload.get("documents", [])
+        answer, cited_documents = align_numbered_citations_to_documents(
+            answer,
+            documents,
+        )
+
+        cited_keys = {_chunk_key(document) for document in cited_documents}
+        non_cited_selected = [
+            document for document in documents if _chunk_key(document) not in cited_keys
+        ]
+        existing_context = list(payload.get("context_documents", []))
+        merged_context = non_cited_selected + existing_context
+
+        finalized = dict(payload)
+        finalized["answer"] = answer
+        finalized["documents"] = cited_documents
+        finalized["context_documents"] = merged_context
+        finalized["chunks_used"] = len(cited_documents)
+        finalized["pages"] = extract_page_numbers(cited_documents)
+        finalized["sources"] = extract_source_names(cited_documents)
+        finalized["citations"] = format_citations(cited_documents)
+
+        average_score = average_rerank_score(cited_documents)
+        finalized["average_score"] = average_score
+        finalized["confidence"] = confidence_label(average_score, self.config)
+        return finalized
 
     def prepare_answer(
         self,
@@ -205,9 +291,26 @@ class DocumentRAGPipeline:
         )
         generated_queries = retrieval_result["generated_queries"]
         selected_docs = retrieval_result["selected_documents"]
-        context_docs = retrieval_result["final_documents"]
-        context = build_context(context_docs)
+        context_docs = (
+            selected_docs
+            if answer_mode == "exhaustive"
+            else retrieval_result["final_documents"]
+        )
+        context = build_context(
+            context_docs,
+            numbered_evidence=answer_mode == "exhaustive",
+        )
         average_score = average_rerank_score(selected_docs)
+
+        # Chunks the LLM saw but that are not part of the "primary evidence"
+        # (selected/cited) — neighbors in standard mode, nothing yet in
+        # exhaustive (it's filled by `finalize_exhaustive_response` after the
+        # cited-only filter runs).
+        selected_keys = {_chunk_key(document) for document in selected_docs}
+        additional_context = [
+            document for document in context_docs
+            if _chunk_key(document) not in selected_keys
+        ]
 
         if not context.strip() or has_weak_evidence(selected_docs, average_score, self.config):
             payload = self._build_fallback_response(
@@ -220,6 +323,7 @@ class DocumentRAGPipeline:
 
         return {
             "documents": selected_docs,
+            "context_documents": additional_context,
             "context": context,
             "confidence": confidence_label(average_score, self.config),
             "pages": extract_page_numbers(selected_docs),
@@ -239,6 +343,50 @@ class DocumentRAGPipeline:
         """Stream answer tokens from the chat model. Use after `prepare_answer`."""
         async for token in self.generator.astream(context, question, answer_mode):
             yield token
+
+    def _generate_exhaustive_answer_with_valid_citations(
+        self,
+        *,
+        context: str,
+        question: str,
+        documents: list[Document],
+    ) -> str:
+        """Retry exhaustive generation until model-authored citations validate."""
+        feedback = ""
+        last_feedback = ""
+        for attempt in range(3):
+            answer = self.generator.answer(
+                context,
+                question,
+                "exhaustive",
+                citation_feedback=feedback,
+            )
+            answer = place_numbered_citations_at_line_end(answer)
+            answer = prune_invalid_numbered_citations(
+                answer,
+                documents,
+                question,
+            )
+            validation = validate_numbered_citations(answer, documents, question)
+            if validation.ok:
+                if attempt:
+                    self.logger.info(
+                        "Exhaustive answer citations validated after %d retry attempt(s).",
+                        attempt,
+                    )
+                return answer
+
+            last_feedback = validation.feedback
+            feedback = _citation_retry_prompt(validation.feedback)
+
+        self.logger.warning(
+            "Exhaustive answer citation validation failed after retries: %s",
+            last_feedback,
+        )
+        return (
+            "I could not produce a properly cited answer from the uploaded evidence. "
+            "Please try again or ask a narrower question."
+        )
 
     # ------------------------------------------------------------------
     # Summarization
@@ -288,13 +436,28 @@ class DocumentRAGPipeline:
         generated_queries = self.queries.generate_search_queries(standalone_question)
         use_diverse = not source_filter and bool(source_names)
         if use_diverse:
-            retrieved = self.retriever.retrieve_diverse(
-                vectorstore, generated_queries, top_k=retrieval_top_k, source_names=source_names
+            retrieved = self.retriever.retrieve(
+                vectorstore,
+                generated_queries,
+                top_k=retrieval_top_k,
+                source_filter=None,
             )
+            retrieved.extend(self.retriever.retrieve_diverse(
+                vectorstore, generated_queries, top_k=retrieval_top_k, source_names=source_names
+            ))
         else:
             retrieved = self.retriever.retrieve(
                 vectorstore, generated_queries, top_k=retrieval_top_k, source_filter=source_filter
             )
+        if answer_mode == "exhaustive":
+            exact_matches = self.retriever.retrieve_exact_matches(
+                vectorstore,
+                generated_queries,
+                top_k=retrieval_top_k,
+                source_filter=source_filter,
+                source_names=source_names or [],
+            )
+            retrieved = exact_matches + retrieved
         unique = deduplicate_documents(retrieved)
         reranked = self.reranker.rerank(
             standalone_question, unique, answer_mode=answer_mode
@@ -361,8 +524,10 @@ class DocumentRAGPipeline:
         ranked = self.reranker.rerank(
             f"Summarize the most important parts of {file_name}.", deduplicated
         )
-        selected = self.reranker.select_final_documents(ranked, answer_mode="standard")
-        return selected or deduplicated[: self.config.summary_fallback_chunks]
+        selected = self.reranker.select_final_documents(ranked, answer_mode="exhaustive")
+        return sort_by_document_order(
+            selected or deduplicated[: self.config.exhaustive_final_chunks]
+        )
 
     def _build_fallback_response(
         self,
@@ -374,6 +539,7 @@ class DocumentRAGPipeline:
         return {
             "answer": FALLBACK_ANSWER,
             "documents": [],
+            "context_documents": [],
             "context": "",
             "confidence": "Low",
             "pages": [],

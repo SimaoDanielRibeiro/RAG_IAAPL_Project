@@ -58,7 +58,9 @@ class ChunkInfo(BaseModel):
     source: str
     page: Optional[int] = None
     score: Optional[float] = None
+    score_scale: Optional[str] = None
     snippet: str
+    document_id: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
@@ -78,8 +80,15 @@ class ChatResponse(BaseModel):
     queries: list[str]
     retrieval_question: str
     documents: list[ChunkInfo]
+    context_documents: list[ChunkInfo] = Field(default_factory=list)
     answer_mode: str
     source_distribution: dict[str, int] = Field(default_factory=dict)
+    document_ids: list[str] = Field(default_factory=list)
+
+
+class SummaryRequest(BaseModel):
+    """Optional document scope for the /summary endpoint."""
+
     document_ids: list[str] = Field(default_factory=list)
 
 

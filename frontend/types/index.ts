@@ -15,7 +15,9 @@ export interface ChunkInfo {
   source: string;
   page: number | null;
   score: number | null;
+  score_scale?: string | null;
   snippet: string;
+  document_id?: string | null;
 }
 
 export interface ChatResponse {
@@ -29,6 +31,7 @@ export interface ChatResponse {
   queries: string[];
   retrieval_question: string;
   documents: ChunkInfo[];
+  context_documents: ChunkInfo[];
   answer_mode: string;
   source_distribution: Record<string, number>;
   document_ids: string[];

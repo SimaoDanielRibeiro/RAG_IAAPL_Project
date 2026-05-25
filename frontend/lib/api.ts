@@ -45,6 +45,15 @@ export const api = {
     return request("/api/documents", { method: "DELETE" });
   },
 
+  documentFileUrl(documentId: string, page?: number | null): string {
+    // Page anchor `#page=N` is honored by built-in PDF viewers in Chrome,
+    // Edge, and Firefox. For non-PDF documents the anchor is ignored.
+    const base = `${BASE}/api/documents/${encodeURIComponent(documentId)}/file`;
+    return page !== undefined && page !== null
+      ? `${base}#page=${page}`
+      : base;
+  },
+
   chat(
     question: string,
     answerMode: AnswerMode,
@@ -127,8 +136,12 @@ export const api = {
     if (buffer.length > 0) dispatch(buffer);
   },
 
-  summary(): Promise<SummaryResponse> {
-    return request("/api/summary", { method: "POST" });
+  summary(documentIds: string[] = []): Promise<SummaryResponse> {
+    return request("/api/summary", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ document_ids: documentIds }),
+    });
   },
 };
 

@@ -24,7 +24,6 @@ to run it.
 8. [HTTP API](#http-api)
 9. [Configuration knobs](#configuration-knobs)
 10. [Troubleshooting](#troubleshooting)
-11. [Evaluation harness](#evaluation-harness)
 
 ---
 
@@ -45,6 +44,17 @@ Key design choices:
   fused candidate pool before answer generation.
 - **Two answer modes.** A concise "standard" mode and a verbose,
   citation-rich "exhaustive" mode.
+- **Citation transparency.** In exhaustive mode every paragraph
+  carries an inline `[N]` chip that maps 1-to-1 with a card in the
+  Evidence panel. Clicking the chip scrolls to the supporting excerpt
+  and pulses it.
+- **Context window visibility.** The Evidence panel can expand an
+  "Additional context the model saw" section listing the neighbor or
+  selected-but-uncited chunks that influenced the answer.
+- **Source preview.** Each Evidence card has an "Open in source"
+  button that opens the original PDF at the cited page inside a
+  modal, so claims can be verified in their original layout.
+- **OCR fallback** for image-only PDFs (optional — see Setup step 5b).
 
 ---
 
@@ -58,8 +68,9 @@ The end-to-end flow when a user asks a question:
                                 +---------+----------+
        1. file_storage                   |
        2. pdf_extractor                  | 4. query rewriting
-       3. document_loader                |    (history-aware) +
-       4. chunking                       |    multi-query expansion
+          (+ OCR fallback)               |    (history-aware) +
+       3. document_loader                |    multi-query expansion
+       4. chunking                       |
             |                            |
             v                            v
        Chroma collection           Generated queries
@@ -85,19 +96,22 @@ The end-to-end flow when a user asks a question:
                 Top-N selected chunks
                         |
                         v
-         7. neighbor expansion (retrieval.expand_neighbor_chunks)
+         7. neighbor expansion (standard mode only)
               - Previous/next chunk per survivor for fuller context
                         |
                         v
          8. context build + answer generation (generation.py)
               - Mode-aware prompt (standard vs exhaustive)
+              - Exhaustive: numbered EVIDENCE IDs the LLM cites as [N]
+              - Citation validation + retry loop (exhaustive only)
               - Stream answer tokens
                         |
                         v
-         9. response (formatting.py)
-              - Citations [file, p.N]
+         9. response shaping (formatting.py + pipeline.py)
+              - Citation alignment: keep only chunks the answer cited
+                and remap [N]s to a compact 1-based range
+              - Context_documents: chunks the LLM saw but did not cite
               - Confidence label (High / Medium / Low)
-              - Source + page lists
 ```
 
 Each stage lives in its own module so the pipeline can be inspected,
@@ -106,7 +120,7 @@ tuned, and tested independently:
 | Stage | File | Class |
 |---|---|---|
 | File persistence | [src/rag/file_storage.py](src/rag/file_storage.py) | `FileStorage` |
-| PDF layout extraction | [src/rag/pdf_extractor.py](src/rag/pdf_extractor.py) | (module functions) |
+| PDF layout extraction (+ OCR) | [src/rag/pdf_extractor.py](src/rag/pdf_extractor.py) | (module functions) |
 | Document loading | [src/rag/document_loader.py](src/rag/document_loader.py) | (module functions) |
 | Chunking | [src/rag/chunking.py](src/rag/chunking.py) | `DocumentChunker` |
 | Vector store mgmt | [src/rag/vector_store.py](src/rag/vector_store.py) | `VectorStoreManager` |
@@ -125,27 +139,38 @@ tuned, and tested independently:
 
 ```text
 RAG_Project/
-├── backend/                 # FastAPI HTTP layer
-│   ├── main.py              # App entry point + CORS
-│   ├── schemas.py           # Pydantic request/response models
+├── backend/                       # FastAPI HTTP layer
+│   ├── main.py                    # App entry point + CORS
+│   ├── schemas.py                 # Pydantic request/response models
 │   ├── api/
-│   │   └── routes.py        # /api/* endpoints
+│   │   └── routes.py              # /api/* endpoints
 │   └── services/
-│       └── rag_service.py   # Process-level singleton: pipeline + state
+│       └── rag_service.py         # Process-level singleton: pipeline + state
 │
-├── src/                     # Pipeline source (importable as `src.rag`)
-│   ├── utils.py             # Logging, hashing, JSON IO
-│   └── rag/                 # RAG package (see table above)
+├── src/                           # Pipeline source (importable as `src.rag`)
+│   ├── utils.py                   # Logging, hashing, JSON IO
+│   └── rag/                       # RAG package (see table above)
 │
-├── frontend/                # Next.js chat UI
+├── frontend/                      # Next.js chat UI
+│   ├── App.tsx                    # Top-level layout + state container
+│   ├── components/
+│   │   ├── ChatPane.tsx           # Message list + citation chips
+│   │   ├── Composer.tsx           # Question input
+│   │   ├── EvidenceCard.tsx       # One retrieved chunk
+│   │   ├── EvidencePanel.tsx      # Right-hand evidence column
+│   │   ├── LandingScreen.tsx
+│   │   ├── Sidebar.tsx            # Documents + scope selector
+│   │   └── SourcePreviewModal.tsx # PDF preview at cited page
+│   ├── lib/
+│   │   ├── api.ts                 # Backend client
+│   │   └── text.ts                # Markdown stripper
+│   └── types/index.ts             # Shared TS types
 │
-├── eval/                    # Offline evaluation harness (see end of README)
+├── data/                          # Uploaded documents (gitignored)
+├── chroma_db/                     # Persistent vector store (gitignored)
 │
-├── data/                    # Uploaded documents (gitignored)
-├── chroma_db/               # Persistent vector store (gitignored)
-│
-├── requirements.txt         # Python dependencies
-├── .env.example             # Sample model configuration
+├── requirements.txt               # Python dependencies
+├── .env.example                   # Sample model configuration
 └── README.md
 ```
 
@@ -157,6 +182,7 @@ RAG_Project/
 - **Node.js 18+** with npm (for the frontend)
 - **Ollama** installed and running locally — https://ollama.com/download
 - Around **6 GB of disk space** for the Ollama models on first pull.
+- **Tesseract OCR** (optional, for scanned PDFs — see step 5b).
 
 The project has been developed on Windows 11. It is OS-independent
 (Linux and macOS work the same way), but the command snippets below
@@ -197,7 +223,8 @@ python -m pip install -r requirements.txt
 
 This installs the LangChain + Chroma + Ollama bindings, PyMuPDF for
 PDF extraction, sentence-transformers for the CrossEncoder reranker,
-and FastAPI / Uvicorn for the HTTP server.
+FastAPI / Uvicorn for the HTTP server, and pytesseract + Pillow for
+the optional OCR pass.
 
 ### 4. Install frontend dependencies
 
@@ -218,6 +245,23 @@ ollama pull nomic-embed-text
 
 `qwen2.5:7b-instruct` is the chat model that generates answers.
 `nomic-embed-text` is the embedding model used to index documents.
+
+### 5b. (Optional) Install Tesseract OCR for scanned PDFs
+
+Image-only PDFs (typical of scanned reports) yield no extractable text
+and fall through to an OCR pass. The Python wrapper (`pytesseract`) is
+already in `requirements.txt`; the system binary it calls must be
+installed separately:
+
+- **Windows:** download the UB Mannheim installer at
+  <https://github.com/UB-Mannheim/tesseract/wiki> and add the install
+  directory to `PATH`. To OCR Portuguese as well as English, tick the
+  "Portuguese" language pack in the installer.
+- **macOS:** `brew install tesseract tesseract-lang`
+- **Linux:** `sudo apt install tesseract-ocr tesseract-ocr-por`
+
+When Tesseract is missing, the pipeline still works for text-based PDFs —
+scanned pages just come back empty and the indexer logs a one-time hint.
 
 ### 6. (Optional) Override the default models
 
@@ -277,26 +321,43 @@ on port 8000 only exposes the HTTP API.
 Open <http://localhost:3000>. The Next.js frontend provides:
 
 - **An upload sidebar** to add PDF / DOCX / TXT / MD documents. Files
-  are saved under `data/` on disk and indexed into ChromaDB.
+  are saved under `data/` on disk and indexed into ChromaDB. Click a
+  document to scope retrieval to it; click again to clear the scope.
 - **A chat panel** where you ask questions. Tokens stream in as the
-  model generates them.
-- **An answer-mode selector** to choose between "standard" (concise,
-  2-4 sentences) and "exhaustive" (multi-paragraph, with inline
-  citations).
-- **An evidence panel** that shows the retrieved chunks behind the
-  answer, with file name, page number, snippet, and rerank score; the
-  generated query rewrites; the confidence label; and a per-source
-  distribution chart.
-- **A "Summarize documents" button** that produces a bullet-point
-  summary for every active document.
+  model generates them. Citation chips (`[1]`, `[2]`, ...) appear in
+  exhaustive-mode answers; clicking one highlights the matching card
+  in the Evidence panel.
+- **An answer-mode selector** in the sidebar with two options:
+  - *Standard* — concise prose (2–4 sentences), no inline citations.
+    The Evidence panel still lists the retrieved chunks.
+  - *Exhaustive* — multi-paragraph answers with `[N]` citations at
+    each paragraph end, validated and remapped server-side so chip
+    numbers match Evidence card numbers exactly.
+- **An evidence panel** on the right that shows:
+  - The standalone question + multi-query rewrites used for retrieval.
+  - File citations (one per source, with the pages used).
+  - A source-distribution chart when multiple files contributed.
+  - The retrieved chunks themselves, each with file name, page number,
+    word count, retrieved excerpt, rerank relevance score, and a
+    hover-revealed action bar (copy, expand, open-in-source).
+  - A collapsible **"Additional context the model saw"** section
+    listing chunks the LLM read but the final answer didn't cite
+    (neighbors in standard mode, selected-but-uncited in exhaustive).
+- **A source-preview modal** that opens when you click *Open in
+  source* on any Evidence card. PDFs are rendered inline with the
+  cited page anchored; other formats fall back to a downloadable
+  preview of the retrieved excerpt.
+- **A "Summarize documents" CTA** that produces a bullet-point
+  summary for every active document via a dedicated endpoint.
 
 Typical flow:
 
 1. Upload one or more documents from the sidebar.
 2. Wait for the indexing notification.
 3. Ask a question in the chat. Toggle answer mode if needed.
-4. Inspect the evidence panel to see exactly which chunks supported
-   the answer.
+4. Click any `[N]` chip to jump to the supporting Evidence card, or
+   click *Open in source* on a card to verify the claim against the
+   original document.
 
 ---
 
@@ -305,16 +366,17 @@ Typical flow:
 The backend is consumed by the frontend but can also be called
 directly via `curl` or the interactive Swagger UI at `/docs`.
 
-| Method | Path                          | Description                            |
-|--------|-------------------------------|----------------------------------------|
-| GET    | `/api/health`                 | Backend + model status                 |
-| GET    | `/api/documents`              | List active documents                  |
-| POST   | `/api/documents/upload`       | Upload + index files                   |
-| DELETE | `/api/documents/{id}`         | Remove one document                    |
-| DELETE | `/api/documents`              | Remove all documents                   |
-| POST   | `/api/chat`                   | Ask a question (non-streaming)         |
-| POST   | `/api/chat/stream`            | Ask a question (streaming, NDJSON)     |
-| POST   | `/api/summary`                | Summarize all active documents         |
+| Method | Path                                | Description                                |
+|--------|-------------------------------------|--------------------------------------------|
+| GET    | `/api/health`                       | Backend + model status                     |
+| GET    | `/api/documents`                    | List active documents                      |
+| POST   | `/api/documents/upload`             | Upload + index files                       |
+| GET    | `/api/documents/{id}/file`          | Serve the original file (for preview)      |
+| DELETE | `/api/documents/{id}`               | Remove one document                        |
+| DELETE | `/api/documents`                    | Remove all documents                       |
+| POST   | `/api/chat`                         | Ask a question (non-streaming)             |
+| POST   | `/api/chat/stream`                  | Ask a question (streaming, NDJSON)         |
+| POST   | `/api/summary`                      | Summarize all (or selected) documents      |
 
 Full schemas in [backend/schemas.py](backend/schemas.py).
 
@@ -355,8 +417,9 @@ first use (~22 MB) and the Chroma collection is built on first
 upload. Subsequent calls reuse both.
 
 **`Indexing failed` on upload.** Check that the file is one of
-`.pdf / .docx / .txt / .md`, smaller than 200 MB, and is not a
-scanned PDF — OCR is not part of the pipeline.
+`.pdf / .docx / .txt / .md` and smaller than 200 MB. Scanned PDFs work
+only if Tesseract OCR is installed (see step 5b in *Setup*); without
+it, image-only pages produce no text and the indexer rejects the file.
 
 **Port 8000 is busy.** Stop the previous Uvicorn process or pass a
 different port: `--port 8001` (and update
@@ -370,29 +433,6 @@ not a primary store — uploaded documents live under `data/`.
 running, then check that `frontend/.env.local` has
 `NEXT_PUBLIC_API_BASE_URL=http://localhost:8000`.
 
----
-
-## Evaluation harness
-
-The `eval/` directory contains a small offline test suite that runs
-21 hand-written questions against the pipeline and scores the
-answers on six deterministic metrics (source recall, page recall,
-must-contain pass rate, must-not-contain pass rate, fallback
-correctness, citation presence). It was used during development to
-catch regressions when tuning the pipeline; it is **not part of the
-runtime app**.
-
-To run it manually:
-
-```powershell
-.\venv\Scripts\python.exe -m eval.run --out eval/results/baseline.json
-```
-
-To diff two runs:
-
-```powershell
-.\venv\Scripts\python.exe -m eval.compare eval/results/baseline.json eval/results/other.json
-```
-
-See [eval/README.md](eval/README.md) for the harness internals and
-golden-set schema.
+**PDF preview shows an empty page.** Some browsers refuse to render
+PDFs inside iframes when extensions block them. Use the *Open in new
+tab* button in the modal header to view the file directly.

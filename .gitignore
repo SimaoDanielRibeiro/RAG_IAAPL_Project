@@ -36,6 +36,8 @@ Thumbs.db
 frontend/.next/
 frontend/node_modules/
 frontend/.env.local
+frontend/tsconfig.tsbuildinfo
 
-# Eval harness run output (keep fixtures + golden files in git)
-eval/results/
+# Dev server stdio captures
+*.err.log
+*.out.log

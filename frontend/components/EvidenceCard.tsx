@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { motion } from "framer-motion";
-import { Check, Copy, Expand } from "lucide-react";
+import { Check, Copy, Expand, ExternalLink, Layers } from "lucide-react";
 import type { ChunkInfo } from "@/types";
 
 // Constant outside the component — not recreated on every render
@@ -13,9 +13,18 @@ type EvidenceCardProps = {
   chunk: ChunkInfo;
   index: number;
   isHighlighted?: boolean;
+  variant?: "evidence" | "context";
+  onOpenSource?: () => void;
 };
 
-export function EvidenceCard({ chunk, index, isHighlighted }: EvidenceCardProps) {
+export function EvidenceCard({
+  chunk,
+  index,
+  isHighlighted,
+  variant = "evidence",
+  onOpenSource,
+}: EvidenceCardProps) {
+  const isContext = variant === "context";
   const [expanded, setExpanded] = useState(false);
   const [copied,   setCopied]   = useState(false);
   const articleRef               = useRef<HTMLElement>(null);
@@ -33,6 +42,7 @@ export function EvidenceCard({ chunk, index, isHighlighted }: EvidenceCardProps)
     ? `${fullText.slice(0, SNIPPET_THRESHOLD - 1)}…`
     : fullText;
 
+  const wordCount    = fullText ? fullText.split(/\s+/).length : 0;
   const previewLines = toPreviewLines(fullText);
 
   /* ── Clipboard actions ──────────────────────────── */
@@ -63,8 +73,15 @@ export function EvidenceCard({ chunk, index, isHighlighted }: EvidenceCardProps)
 
       {/* ── Card header ──────────────────────────────── */}
       <div className="flex items-start gap-3">
-        <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-accent text-[12px] font-semibold text-app">
-          {index + 1}
+        <span
+          className={`grid h-6 w-6 shrink-0 place-items-center rounded-full text-[12px] font-semibold ${
+            isContext
+              ? "border border-line bg-elevated text-muted"
+              : "bg-accent text-app"
+          }`}
+          title={isContext ? "Additional context" : `Evidence ${index + 1}`}
+        >
+          {isContext ? <Layers size={11} strokeWidth={2} /> : index + 1}
         </span>
 
         <div className="min-w-0 flex-1">
@@ -74,12 +91,22 @@ export function EvidenceCard({ chunk, index, isHighlighted }: EvidenceCardProps)
           <div className="mt-1.5 flex items-center justify-between gap-3">
             <p className="min-w-0 truncate text-[12px] text-secondary">
               {formatPage(chunk.page)}
+              {wordCount > 0 && (
+                <>
+                  <span className="mx-1.5 text-muted">·</span>
+                  {wordCount} word{wordCount === 1 ? "" : "s"}
+                </>
+              )}
               <span className="mx-1.5 text-muted">·</span>
-              Retrieved excerpt
+              {isContext ? "Additional context" : "Retrieved excerpt"}
             </p>
             {chunk.score !== null && chunk.score !== undefined && (
-              <span className="shrink-0 text-[12px] font-medium text-accent">
-                {formatScore(chunk.score)}
+              <span
+                className={`shrink-0 text-[12px] font-medium ${
+                  isContext ? "text-muted" : "text-accent"
+                }`}
+              >
+                {formatScore(chunk.score, chunk.score_scale)}
               </span>
             )}
           </div>
@@ -133,6 +160,12 @@ export function EvidenceCard({ chunk, index, isHighlighted }: EvidenceCardProps)
 
       {/* ── Hover-only action bar ─────────────────────── */}
       <div className="mt-4 flex items-center justify-end gap-1 opacity-0 transition-opacity duration-150 ease-out group-hover:opacity-100">
+        {onOpenSource && (
+          <ActionBtn label="Open in source" onClick={onOpenSource}>
+            <ExternalLink size={14} />
+          </ActionBtn>
+        )}
+
         <ActionBtn label={copied ? "Copied!" : "Copy"} onClick={handleCopy}>
           {copied
             ? <Check size={14} className="text-accent" />
@@ -179,9 +212,11 @@ function formatPage(page: number | null | undefined) {
   return `Page ${page + 1}`;
 }
 
-function formatScore(score: number) {
-  if (score <= 1)  return `${Math.round(score * 100)}% match`;
-  if (score <= 10) return `${Math.round(score * 10)}% match`;
+function formatScore(score: number, scoreScale?: string | null) {
+  if (scoreScale === "absolute" || scoreScale === "relative" || score > 1) {
+    return `${Math.round(score)}/10 relevance`;
+  }
+  if (score <= 1) return `${Math.round(score * 100)}% match`;
   return `${Math.round(score)}% match`;
 }
 

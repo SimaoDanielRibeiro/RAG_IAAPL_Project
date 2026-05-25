@@ -173,10 +173,31 @@ class RAGService:
         ):
             yield token
 
-    def summarize(self) -> dict[str, Any]:
+    def answer_from_prepared(
+        self,
+        context: str,
+        question: str,
+        answer_mode: str,
+        documents: list[Any],
+    ) -> str:
+        return self._get_pipeline().generate_answer(
+            context,
+            question,
+            answer_mode,
+            documents,
+        )
+
+    def finalize_exhaustive_response(
+        self,
+        prepared: dict[str, Any],
+        answer: str,
+    ) -> dict[str, Any]:
+        return self._get_pipeline().finalize_exhaustive_response(prepared, answer)
+
+    def summarize(self, document_ids: list[str] | None = None) -> dict[str, Any]:
         if self._vectorstore is None:
             raise ValueError("No documents indexed. Upload documents first.")
-        file_names = [d.name for d in self._documents]
+        file_names = self._resolve_active_sources(document_ids)
         return self._get_pipeline().summarize_documents(self._vectorstore, file_names)
 
     # ------------------------------------------------------------------

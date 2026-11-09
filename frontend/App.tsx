@@ -10,7 +10,7 @@ import { LandingScreen } from "@/components/LandingScreen";
 import { Sidebar } from "@/components/Sidebar";
 import { SourcePreviewModal } from "@/components/SourcePreviewModal";
 import type { SourcePreviewTarget } from "@/components/SourcePreviewModal";
-import { api } from "@/lib/api";
+import { api, API_BASE_URL } from "@/lib/api";
 import { stripMarkdown } from "@/lib/text";
 import type {
   AnswerMode,
@@ -67,7 +67,7 @@ export default function App() {
 
   useEffect(() => {
     refreshDocuments().catch(() => {
-      setUploadError("Could not reach the backend at http://localhost:8000.");
+      setUploadError(`Could not reach the backend at ${API_BASE_URL}.`);
     });
   }, [refreshDocuments]);
 

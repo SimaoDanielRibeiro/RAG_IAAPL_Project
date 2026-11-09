@@ -17,6 +17,12 @@ load_dotenv()
 
 LOGGER = configure_logging()
 
+# Resolve storage folders from the project root, not the current working
+# directory, so uploads and the vector index always land in the same place.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DATA_DIR = PROJECT_ROOT / "data"
+PERSIST_DIR = PROJECT_ROOT / "chroma_db"
+
 CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5:7b-instruct")
 EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
 
@@ -48,8 +54,8 @@ class RAGService:
         if self._pipeline is None:
             LOGGER.info("Initialising RAG pipeline (chat=%s, embed=%s)", CHAT_MODEL, EMBEDDING_MODEL)
             self._pipeline = DocumentRAGPipeline(
-                data_dir=Path("data"),
-                persist_dir=Path("chroma_db"),
+                data_dir=DATA_DIR,
+                persist_dir=PERSIST_DIR,
                 chat_model=CHAT_MODEL,
                 embedding_model=EMBEDDING_MODEL,
                 logger=LOGGER,

@@ -146,7 +146,7 @@ ollama --version
 ### 2. Download the project
 
 ```bash
-git clone https://github.com/1230692/RAG_IAAPL_Project.git
+git clone https://github.com/SimaoDanielRibeiro/RAG_IAAPL_Project.git
 cd RAG_IAAPL_Project
 ```
 
